@@ -17,8 +17,10 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
-import com.android.mms.layout.LayoutManager;
+import java.io.IOException;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.TreeMap;
 
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -27,7 +29,6 @@ import android.media.MediaPlayer;
 import android.net.Uri;
 import android.text.method.HideReturnsTransformationMethod;
 import android.util.AttributeSet;
-import android.util.Config;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -41,10 +42,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.VideoView;
 
-import java.io.IOException;
-import java.util.Comparator;
-import java.util.Map;
-import java.util.TreeMap;
+import com.android.mms.R;
+import com.android.mms.layout.LayoutManager;
 
 /**
  * A basic view to show the contents of a slide.
@@ -53,7 +52,7 @@ public class SlideView extends AbsoluteLayout implements
         AdaptableSlideViewInterface {
     private static final String TAG = "SlideView";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
     // FIXME: Need getHeight from mAudioInfoView instead of constant AUDIO_INFO_HEIGHT.
     private static final int AUDIO_INFO_HEIGHT = 82;
 
@@ -109,7 +108,7 @@ public class SlideView extends AbsoluteLayout implements
             mImageView = new ImageView(mContext);
             mImageView.setPadding(0, 5, 0, 5);
             addView(mImageView, new LayoutParams(
-                    LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, 0, 0));
+                    LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, 0, 0));
             if (DEBUG) {
                 mImageView.setBackgroundColor(0xFFFF0000);
             }
@@ -163,8 +162,6 @@ public class SlideView extends AbsoluteLayout implements
             LayoutInflater factory = LayoutInflater.from(getContext());
             mAudioInfoView = factory.inflate(R.layout.playing_audio_info, null);
             int height = mAudioInfoView.getHeight();
-            TextView audioName = (TextView) mAudioInfoView.findViewById(R.id.name);
-            audioName.setText(name);
             if (mConformanceMode) {
                 mViewPort.addView(mAudioInfoView, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,
                         AUDIO_INFO_HEIGHT));
@@ -177,6 +174,8 @@ public class SlideView extends AbsoluteLayout implements
                 }
             }
         }
+        TextView audioName = (TextView) mAudioInfoView.findViewById(R.id.name);
+        audioName.setText(name);
         mAudioInfoView.setVisibility(View.GONE);
     }
 
@@ -206,7 +205,12 @@ public class SlideView extends AbsoluteLayout implements
             mAudioPlayer.release();
             mAudioPlayer = null;
         }
+
+        // Reset state variables
         mIsPrepared = false;
+        mStartWhenPrepared = false;
+        mSeekWhenPrepared = 0;
+        mStopWhenPrepared = false;
 
         try {
             mAudioPlayer = new MediaPlayer();
@@ -241,6 +245,8 @@ public class SlideView extends AbsoluteLayout implements
         }
         mTextView.setVisibility(View.VISIBLE);
         mTextView.setText(text);
+        // Let the text in Mms can be selected.
+        mTextView.setTextIsSelectable(true);
     }
 
     public void setTextRegion(int left, int top, int width, int height) {
@@ -267,12 +273,12 @@ public class SlideView extends AbsoluteLayout implements
     }
 
     public void setTextVisibility(boolean visible) {
-        if (mScrollText != null) {
-            if (mConformanceMode) {
+        if (mConformanceMode) {
+            if (mTextView != null) {
                 mTextView.setVisibility(visible ? View.VISIBLE : View.GONE);
-            } else {
-                mScrollText.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
             }
+        } else if (mScrollText != null) {
+            mScrollText.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
         }
     }
 
@@ -468,13 +474,14 @@ public class SlideView extends AbsoluteLayout implements
                 protected void onScrollChanged(int l, int t, int oldl, int oldt) {
                     // Shows MediaController when the view is scrolled to the top/bottom of itself.
                     if (t == 0 || t >= mBottomY){
-                        if (mMediaController != null) {
+                        if (mMediaController != null
+                                && !((SlideshowActivity) mContext).isFinishing()) {
                             mMediaController.show();
                         }
                     }
                 }
             };
-            mScrollViewPort.setScrollBarStyle(SCROLLBARS_OUTSIDE_INSET);
+            mScrollViewPort.setScrollBarStyle(SCROLLBARS_INSIDE_OVERLAY);
             mViewPort = new LinearLayout(mContext);
             mViewPort.setOrientation(LinearLayout.VERTICAL);
             mViewPort.setGravity(Gravity.CENTER);
@@ -535,5 +542,8 @@ public class SlideView extends AbsoluteLayout implements
             }
             view.setVisibility(View.GONE);
         }
+    }
+
+    public void setVideoThumbnail(String name, Bitmap bitmap) {
     }
 }

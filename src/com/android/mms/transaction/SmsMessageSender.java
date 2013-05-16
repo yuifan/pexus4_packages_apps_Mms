@@ -17,20 +17,21 @@
 
 package com.android.mms.transaction;
 
-import com.android.mms.LogTag;
-import com.android.mms.ui.MessagingPreferenceActivity;
-import com.google.android.mms.MmsException;
-import android.database.sqlite.SqliteWrapper;
-
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteException;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.preference.PreferenceManager;
 import android.provider.Telephony.Sms;
+import android.provider.Telephony.Sms.Inbox;
 import android.util.Log;
+
+import com.android.mms.LogTag;
+import com.android.mms.ui.MessagingPreferenceActivity;
+import com.google.android.mms.MmsException;
 
 public class SmsMessageSender implements MessageSender {
     protected final Context mContext;
@@ -40,6 +41,7 @@ public class SmsMessageSender implements MessageSender {
     protected final String mServiceCenter;
     protected final long mThreadId;
     protected long mTimestamp;
+    private static final String TAG = "SmsMessageSender";
 
     // Default preference values
     private static final boolean DEFAULT_DELIVERY_REPORT_MODE  = false;
@@ -70,7 +72,7 @@ public class SmsMessageSender implements MessageSender {
 
     public boolean sendMessage(long token) throws MmsException {
         // In order to send the message one by one, instead of sending now, the message will split,
-        // and be put into the queue along with each destinations 
+        // and be put into the queue along with each destinations
         return queueMessage(token);
     }
 
@@ -87,13 +89,19 @@ public class SmsMessageSender implements MessageSender {
 
         for (int i = 0; i < mNumberOfDests; i++) {
             try {
-                Sms.addMessageToUri(mContext.getContentResolver(), 
+                if (LogTag.DEBUG_SEND) {
+                    Log.v(TAG, "queueMessage mDests[i]: " + mDests[i] + " mThreadId: " + mThreadId);
+                }
+                Sms.addMessageToUri(mContext.getContentResolver(),
                         Uri.parse("content://sms/queued"), mDests[i],
                         mMessageText, null, mTimestamp,
                         true /* read */,
                         requestDeliveryReport,
                         mThreadId);
             } catch (SQLiteException e) {
+                if (LogTag.DEBUG_SEND) {
+                    Log.e(TAG, "queueMessage SQLiteException", e);
+                }
                 SqliteWrapper.checkSQLiteException(mContext, e);
             }
         }
@@ -123,7 +131,7 @@ public class SmsMessageSender implements MessageSender {
 
         try {
             cursor = SqliteWrapper.query(mContext, mContext.getContentResolver(),
-                            Sms.CONTENT_URI, SERVICE_CENTER_PROJECTION,
+                            Inbox.CONTENT_URI, SERVICE_CENTER_PROJECTION,
                             "thread_id = " + threadId, null, "date DESC");
 
             if ((cursor == null) || !cursor.moveToFirst()) {

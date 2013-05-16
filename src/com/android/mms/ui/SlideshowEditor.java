@@ -17,8 +17,10 @@
 
 package com.android.mms.ui;
 
-import com.google.android.mms.ContentType;
-import com.google.android.mms.MmsException;
+import android.content.Context;
+import android.net.Uri;
+import android.util.Log;
+
 import com.android.mms.model.AudioModel;
 import com.android.mms.model.ImageModel;
 import com.android.mms.model.RegionModel;
@@ -26,10 +28,8 @@ import com.android.mms.model.SlideModel;
 import com.android.mms.model.SlideshowModel;
 import com.android.mms.model.TextModel;
 import com.android.mms.model.VideoModel;
-
-import android.content.Context;
-import android.net.Uri;
-import android.util.Log;
+import com.google.android.mms.ContentType;
+import com.google.android.mms.MmsException;
 
 /**
  * An utility to edit contents of a slide.
@@ -40,10 +40,14 @@ public class SlideshowEditor {
     public static final int MAX_SLIDE_NUM = 10;
 
     private final Context mContext;
-    private final SlideshowModel mModel;
+    private SlideshowModel mModel;
 
     public SlideshowEditor(Context context, SlideshowModel model) {
         mContext = context;
+        mModel = model;
+    }
+
+    public void setSlideshow(SlideshowModel model) {
         mModel = model;
     }
 
@@ -74,6 +78,23 @@ public class SlideshowEditor {
                     mModel.getLayout().getTextRegion());
             slide.add(text);
 
+            mModel.add(position, slide);
+            return true;
+        } else {
+            Log.w(TAG, "The limitation of the number of slides is reached.");
+            return false;
+        }
+    }
+    /**
+     * Add an existing slide at the specified position in the message.
+     *
+     * @return true if success, false if reach the max slide number.
+     * @throws IndexOutOfBoundsException - if position is out of range
+     *         (position < 0 || position > size()).
+     */
+    public boolean addSlide(int position, SlideModel slide) {
+        int size = mModel.size();
+        if (size < MAX_SLIDE_NUM) {
             mModel.add(position, slide);
             return true;
         } else {

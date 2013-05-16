@@ -17,7 +17,7 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
+import java.util.Map;
 
 import android.content.Context;
 import android.content.res.Resources;
@@ -32,7 +32,7 @@ import android.util.Log;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.util.Map;
+import com.android.mms.R;
 
 /**
  * This class provides an embedded editor/viewer of audio attachment.
@@ -151,6 +151,9 @@ public class AudioAttachmentView extends LinearLayout implements
     public void setVideo(String name, Uri video) {
         // TODO Auto-generated method stub
 
+    }
+
+    public void setVideoThumbnail(String name, Bitmap bitmap) {
     }
 
     public void setVideoVisibility(boolean visible) {

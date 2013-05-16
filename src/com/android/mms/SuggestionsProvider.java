@@ -17,8 +17,6 @@
 package com.android.mms;
 
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Map;
 
 import android.app.SearchManager;
 import android.content.ContentResolver;
@@ -33,6 +31,7 @@ import android.database.DataSetObserver;
 import android.database.sqlite.SQLiteException;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.TextUtils;
 
 /**
  * Suggestions provider for mms.  Queries the "words" table to provide possible word suggestions.
@@ -92,9 +91,11 @@ public class SuggestionsProvider extends android.content.ContentProvider {
         int mColumnCount;
         int mCurrentRow;
         ArrayList<Row> mRows = new ArrayList<Row>();
+        String mQuery;
 
         public SuggestionsCursor(Cursor cursor, String query) {
             mDatabaseCursor = cursor;
+            mQuery = query;
 
             mColumnCount = cursor.getColumnCount();
             try {
@@ -112,47 +113,35 @@ public class SuggestionsProvider extends android.content.ContentProvider {
         }
 
         private class Row {
-            public Row(int row, String text, int startOffset, int endOffset) {
-                mText = text;
-                mRowNumber = row;
-                mStartOffset = startOffset;
-                mEndOffset = endOffset;
-            }
-            String mText;
-            int mRowNumber;
-            int mStartOffset;
-            int mEndOffset;
+            private String mSnippet;
+            private int mRowNumber;
 
-            public String getWord() {
-                return mText.substring(mStartOffset, mEndOffset);
+            public Row(int row, String snippet) {
+                mSnippet = snippet.trim();
+                mRowNumber = row;
+            }
+            public String getSnippet() {
+                return mSnippet;
             }
         }
 
+        /*
+         * Compute rows for rows in the cursor.  The cursor can contain duplicates which
+         * are filtered out in the while loop.  Using DISTINCT on the result of the
+         * FTS3 snippet function does not work so we do it here in the code.
+         */
         private void computeRows() {
-            HashSet<String> got = new HashSet<String>();
-
-            int textColumn = mDatabaseCursor.getColumnIndex("index_text");
-            int offsetsColumn = mDatabaseCursor.getColumnIndex("offsets(words)");
+            int snippetColumn = mDatabaseCursor.getColumnIndex("snippet");
 
             int count = mDatabaseCursor.getCount();
+            String previousSnippet = null;
+
             for (int i = 0; i < count; i++) {
                 mDatabaseCursor.moveToPosition(i);
-                String message = mDatabaseCursor.getString(textColumn);
-
-                int [] offsets = computeOffsets(mDatabaseCursor.getString(offsetsColumn));
-                for (int j = 0; j < offsets.length; j += 4) {
-//                  int columnNumber = offsets[j+0];
-//                  int termNumber   = offsets[j+1];
-                    int startOffset  = offsets[j+2];
-                    int length       = offsets[j+3];
-                    int endOffset = startOffset + length;
-                    String candidate = message.substring(startOffset, endOffset);
-                    String key = candidate.toLowerCase();
-                    if (got.contains(key)) {
-                        continue;
-                    }
-                    got.add(key);
-                    mRows.add(new Row(i, message, startOffset, endOffset));
+                String snippet = mDatabaseCursor.getString(snippetColumn);
+                if (!TextUtils.equals(previousSnippet, snippet)) {
+                    mRows.add(new Row(i, snippet));
+                    previousSnippet = snippet;
                 }
             }
         }
@@ -206,9 +195,7 @@ public class SuggestionsProvider extends android.content.ContentProvider {
         }
 
         public CursorWindow getWindow() {
-//          return ((CrossProcessCursor)mCursor).getWindow();
-            CursorWindow window = new CursorWindow(false);
-            return window;
+            return null;
         }
 
         public boolean onMove(int oldPosition, int newPosition) {
@@ -225,7 +212,7 @@ public class SuggestionsProvider extends android.content.ContentProvider {
                 SearchManager.SUGGEST_COLUMN_INTENT_DATA,
                 SearchManager.SUGGEST_COLUMN_INTENT_ACTION,
                 SearchManager.SUGGEST_COLUMN_INTENT_EXTRA_DATA,
-                SearchManager.SUGGEST_COLUMN_TEXT_1
+                SearchManager.SUGGEST_COLUMN_TEXT_1,
             };
 
         // Cursor column offsets for the above virtual columns.
@@ -297,39 +284,35 @@ public class SuggestionsProvider extends android.content.ContentProvider {
         }
 
         public String getString(int column) {
+            // if we're returning one of the columns in the underlying database column
+            // then do so here
             if (column < mColumnCount) {
                 return mDatabaseCursor.getString(column);
             }
 
+            // otherwise we're returning one of the synthetic columns.
+            // the constants like INTENT_DATA_COLUMN are offsets relative to
+            // mColumnCount.
             Row row = mRows.get(mCurrentRow);
             switch (column - mColumnCount) {
                 case INTENT_DATA_COLUMN:
-                    Uri u = Uri.parse("content://mms-sms/search").buildUpon().appendQueryParameter("pattern", row.getWord()).build();
+                    Uri.Builder b = Uri.parse("content://mms-sms/search").buildUpon();
+                    b = b.appendQueryParameter("pattern", row.getSnippet());
+                    Uri u = b.build();
                     return u.toString();
                 case INTENT_ACTION_COLUMN:
                     return Intent.ACTION_SEARCH;
                 case INTENT_EXTRA_DATA_COLUMN:
-                    return getString(getColumnIndex(SearchManager.SUGGEST_COLUMN_TEXT_1));
+                    return row.getSnippet();
                 case INTENT_TEXT_COLUMN:
-                    return row.getWord();
+                    return row.getSnippet();
                 default:
                     return null;
             }
         }
 
-        public void abortUpdates() {
-        }
-
         public void close() {
             mDatabaseCursor.close();
-        }
-
-        public boolean commitUpdates() {
-            return false;
-        }
-
-        public boolean commitUpdates(Map<? extends Long, ? extends Map<String, Object>> values) {
-            return false;
         }
 
         public void copyStringToBuffer(int columnIndex, CharArrayBuffer buffer) {
@@ -338,10 +321,6 @@ public class SuggestionsProvider extends android.content.ContentProvider {
 
         public void deactivate() {
             mDatabaseCursor.deactivate();
-        }
-
-        public boolean deleteRow() {
-            return false;
         }
 
         public byte[] getBlob(int columnIndex) {
@@ -389,10 +368,6 @@ public class SuggestionsProvider extends android.content.ContentProvider {
             return false;
         }
 
-        public boolean hasUpdates() {
-            return false;
-        }
-
         public boolean isAfterLast() {
             return mCurrentRow >= mRows.size();
         }
@@ -411,6 +386,10 @@ public class SuggestionsProvider extends android.content.ContentProvider {
 
         public boolean isLast() {
             return mCurrentRow == mRows.size() - 1;
+        }
+
+        public int getType(int columnIndex) {
+            throw new UnsupportedOperationException();  // TODO revisit
         }
 
         public boolean isNull(int columnIndex) {
@@ -437,48 +416,12 @@ public class SuggestionsProvider extends android.content.ContentProvider {
             mDatabaseCursor.setNotificationUri(cr, uri);
         }
 
-        public boolean supportsUpdates() {
-            return false;
-        }
-
         public void unregisterContentObserver(ContentObserver observer) {
             mDatabaseCursor.unregisterContentObserver(observer);
         }
 
         public void unregisterDataSetObserver(DataSetObserver observer) {
             mDatabaseCursor.unregisterDataSetObserver(observer);
-        }
-
-        public boolean updateBlob(int columnIndex, byte[] value) {
-            return false;
-        }
-
-        public boolean updateDouble(int columnIndex, double value) {
-            return false;
-        }
-
-        public boolean updateFloat(int columnIndex, float value) {
-            return false;
-        }
-
-        public boolean updateInt(int columnIndex, int value) {
-            return false;
-        }
-
-        public boolean updateLong(int columnIndex, long value) {
-            return false;
-        }
-
-        public boolean updateShort(int columnIndex, short value) {
-            return false;
-        }
-
-        public boolean updateString(int columnIndex, String value) {
-            return false;
-        }
-
-        public boolean updateToNull(int columnIndex) {
-            return false;
         }
     }
 }

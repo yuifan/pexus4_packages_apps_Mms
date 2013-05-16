@@ -24,15 +24,11 @@ import static com.android.mms.dom.smil.SmilMediaElementImpl.SMIL_MEDIA_START_EVE
 import static com.android.mms.dom.smil.SmilParElementImpl.SMIL_SLIDE_END_EVENT;
 import static com.android.mms.dom.smil.SmilParElementImpl.SMIL_SLIDE_START_EVENT;
 
-import com.android.mms.dom.smil.SmilDocumentImpl;
-import com.android.mms.dom.smil.parser.SmilXmlParser;
-import com.android.mms.dom.smil.parser.SmilXmlSerializer;
-import android.drm.mobile1.DrmException;
-import com.android.mms.drm.DrmWrapper;
-import com.google.android.mms.ContentType;
-import com.google.android.mms.MmsException;
-import com.google.android.mms.pdu.PduBody;
-import com.google.android.mms.pdu.PduPart;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 
 import org.w3c.dom.events.EventTarget;
 import org.w3c.dom.smil.SMILDocument;
@@ -45,15 +41,19 @@ import org.w3c.dom.smil.SMILRegionMediaElement;
 import org.w3c.dom.smil.SMILRootLayoutElement;
 import org.xml.sax.SAXException;
 
+import android.drm.DrmManagerClient;
 import android.text.TextUtils;
 import android.util.Config;
 import android.util.Log;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
+import com.android.mms.MmsApp;
+import com.android.mms.dom.smil.SmilDocumentImpl;
+import com.android.mms.dom.smil.parser.SmilXmlParser;
+import com.android.mms.dom.smil.parser.SmilXmlSerializer;
+import com.google.android.mms.ContentType;
+import com.google.android.mms.MmsException;
+import com.google.android.mms.pdu.PduBody;
+import com.google.android.mms.pdu.PduPart;
 
 public class SmilHelper {
     private static final String TAG = "Mms/smil";
@@ -198,6 +198,8 @@ public class SmilHelper {
             return document;
         }
 
+        DrmManagerClient drmManagerClient = MmsApp.getApplication().getDrmManagerClient();
+
         boolean hasText = false;
         boolean hasMedia = false;
         for (int i = 0; i < partsNum; i++) {
@@ -210,17 +212,9 @@ public class SmilHelper {
 
             PduPart part = pb.getPart(i);
             String contentType = new String(part.getContentType());
+
             if (ContentType.isDrmType(contentType)) {
-                DrmWrapper dw;
-                try {
-                    dw = new DrmWrapper(contentType, part.getDataUri(),
-                                        part.getData());
-                    contentType = dw.getContentType();
-                } catch (DrmException e) {
-                    Log.e(TAG, e.getMessage(), e);
-                } catch (IOException e) {
-                    Log.e(TAG, e.getMessage(), e);
-                }
+                contentType = drmManagerClient.getOriginalMimeType(part.getDataUri());
             }
 
             if (contentType.equals(ContentType.TEXT_PLAIN)
@@ -304,9 +298,10 @@ public class SmilHelper {
         SMILElement bodyElement = (SMILElement) document.createElement("body");
         smilElement.appendChild(bodyElement);
 
-        boolean txtRegionPresentInLayout = false;
-        boolean imgRegionPresentInLayout = false;
         for (SlideModel slide : slideshow) {
+            boolean txtRegionPresentInLayout = false;
+            boolean imgRegionPresentInLayout = false;
+
             // Create PAR element.
             SMILParElement par = addPar(document);
             par.setDur(slide.getDuration() / 1000f);

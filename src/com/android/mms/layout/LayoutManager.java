@@ -19,10 +19,7 @@ package com.android.mms.layout;
 
 import android.content.Context;
 import android.content.res.Configuration;
-import android.util.Config;
 import android.util.Log;
-import android.view.Display;
-import android.view.WindowManager;
 
 /**
  * MMS presentation layout management.
@@ -30,7 +27,7 @@ import android.view.WindowManager;
 public class LayoutManager {
     private static final String TAG = "LayoutManager";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
     private final Context mContext;
     private LayoutParameters mLayoutParams;
@@ -54,12 +51,12 @@ public class LayoutManager {
         }
     }
 
-    private static LayoutParameters getLayoutParameters(int displayType) {
+    private LayoutParameters getLayoutParameters(int displayType) {
         switch (displayType) {
             case LayoutParameters.HVGA_LANDSCAPE:
-                return new HVGALayoutParameters(LayoutParameters.HVGA_LANDSCAPE);
+                return new HVGALayoutParameters(mContext, LayoutParameters.HVGA_LANDSCAPE);
             case LayoutParameters.HVGA_PORTRAIT:
-                return new HVGALayoutParameters(LayoutParameters.HVGA_PORTRAIT);
+                return new HVGALayoutParameters(mContext, LayoutParameters.HVGA_PORTRAIT);
         }
 
         throw new IllegalArgumentException(

@@ -17,33 +17,35 @@
 
 package com.android.mms.model;
 
-import com.android.mms.ContentRestrictionException;
-import com.android.mms.LogTag;
-import com.android.mms.dom.events.EventImpl;
-import com.android.mms.dom.smil.SmilMediaElementImpl;
-import com.android.mms.drm.DrmWrapper;
-import com.google.android.mms.MmsException;
-import android.database.sqlite.SqliteWrapper;
-
 import org.w3c.dom.events.Event;
 import org.w3c.dom.smil.ElementTime;
 
 import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.provider.MediaStore.Images;
 import android.text.TextUtils;
-import android.util.Config;
 import android.util.Log;
+import android.webkit.MimeTypeMap;
 
+import com.android.mms.ContentRestrictionException;
+import com.android.mms.LogTag;
+import com.android.mms.MmsApp;
+import com.android.mms.dom.events.EventImpl;
+import com.android.mms.dom.smil.SmilMediaElementImpl;
+import com.android.mms.util.ItemLoadedCallback;
+import com.android.mms.util.ItemLoadedFuture;
+import com.android.mms.util.ThumbnailManager;
 import com.google.android.mms.ContentType;
-import java.io.IOException;
+import com.google.android.mms.MmsException;
 
 public class VideoModel extends RegionMediaModel {
     private static final String TAG = MediaModel.TAG;
     private static final boolean DEBUG = true;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
+    private ItemLoadedFuture mItemLoadedFuture;
 
     public VideoModel(Context context, Uri uri, RegionModel region)
             throws MmsException {
@@ -57,19 +59,56 @@ public class VideoModel extends RegionMediaModel {
         super(context, SmilHelper.ELEMENT_TAG_VIDEO, contentType, src, uri, region);
     }
 
-    public VideoModel(Context context, String contentType, String src,
-            DrmWrapper wrapper, RegionModel regionModel) throws IOException {
-        super(context, SmilHelper.ELEMENT_TAG_VIDEO, contentType, src, wrapper, regionModel);
+    private void initModelFromUri(Uri uri) throws MmsException {
+        String scheme = uri.getScheme();
+        if (scheme.equals("content")) {
+            initFromContentUri(uri);
+        } else if (uri.getScheme().equals("file")) {
+            initFromFile(uri);
+        }
+        initMediaDuration();
     }
 
-    private void initModelFromUri(Uri uri) throws MmsException {
+    private void initFromFile(Uri uri) {
+        String path = uri.getPath();
+        mSrc = path.substring(path.lastIndexOf('/') + 1);
+        MimeTypeMap mimeTypeMap = MimeTypeMap.getSingleton();
+        String extension = MimeTypeMap.getFileExtensionFromUrl(mSrc);
+        if (TextUtils.isEmpty(extension)) {
+            // getMimeTypeFromExtension() doesn't handle spaces in filenames nor can it handle
+            // urlEncoded strings. Let's try one last time at finding the extension.
+            int dotPos = mSrc.lastIndexOf('.');
+            if (0 <= dotPos) {
+                extension = mSrc.substring(dotPos + 1);
+            }
+        }
+        mContentType = mimeTypeMap.getMimeTypeFromExtension(extension);
+        // It's ok if mContentType is null. Eventually we'll show a toast telling the
+        // user the video couldn't be attached.
+
+        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+            Log.v(TAG, "New VideoModel initFromFile created:"
+                    + " mSrc=" + mSrc
+                    + " mContentType=" + mContentType
+                    + " mUri=" + uri);
+        }
+    }
+
+    private void initFromContentUri(Uri uri) throws MmsException {
         ContentResolver cr = mContext.getContentResolver();
         Cursor c = SqliteWrapper.query(mContext, cr, uri, null, null, null, null);
 
         if (c != null) {
             try {
                 if (c.moveToFirst()) {
-                    String path = c.getString(c.getColumnIndexOrThrow(Images.Media.DATA));
+                    String path;
+                    try {
+                        // Local videos will have a data column
+                        path = c.getString(c.getColumnIndexOrThrow(Images.Media.DATA));
+                    } catch (IllegalArgumentException e) {
+                        // For non-local videos, the path is the uri
+                        path = uri.toString();
+                    }
                     mSrc = path.substring(path.lastIndexOf('/') + 1);
                     mContentType = c.getString(c.getColumnIndexOrThrow(
                             Images.Media.MIME_TYPE));
@@ -97,7 +136,7 @@ public class VideoModel extends RegionMediaModel {
                     }
 
                     if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
-                        Log.v(TAG, "New VideoModel created:"
+                        Log.v(TAG, "New VideoModel initFromContentUri created:"
                                 + " mSrc=" + mSrc
                                 + " mContentType=" + mContentType
                                 + " mUri=" + uri);
@@ -111,8 +150,6 @@ public class VideoModel extends RegionMediaModel {
         } else {
             throw new MmsException("Bad URI: " + uri);
         }
-
-        initMediaDuration();
     }
 
     // EventListener Interface
@@ -157,5 +194,21 @@ public class VideoModel extends RegionMediaModel {
     @Override
     protected boolean isPlayable() {
         return true;
+    }
+
+    public ItemLoadedFuture loadThumbnailBitmap(ItemLoadedCallback callback) {
+        ThumbnailManager thumbnailManager = MmsApp.getApplication().getThumbnailManager();
+        mItemLoadedFuture = thumbnailManager.getVideoThumbnail(getUri(), callback);
+        return mItemLoadedFuture;
+    }
+
+    public void cancelThumbnailLoading() {
+        if (mItemLoadedFuture != null && !mItemLoadedFuture.isDone()) {
+            if (Log.isLoggable(LogTag.APP, Log.DEBUG)) {
+                Log.v(TAG, "cancelThumbnailLoading for: " + this);
+            }
+            mItemLoadedFuture.cancel(getUri());
+            mItemLoadedFuture = null;
+        }
     }
 }

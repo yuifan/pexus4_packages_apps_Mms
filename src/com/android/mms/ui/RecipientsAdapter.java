@@ -17,17 +17,15 @@
 
 package com.android.mms.ui;
 
-import com.android.common.ArrayListCursor;
-import com.android.mms.R;
-import com.android.mms.data.Contact;
-
 import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.MatrixCursor;
 import android.database.MergeCursor;
 import android.net.Uri;
-import android.provider.ContactsContract.Contacts;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
+import android.provider.ContactsContract.Contacts;
+import android.provider.ContactsContract.DataUsageFeedback;
 import android.telephony.PhoneNumberUtils;
 import android.text.Annotation;
 import android.text.Spannable;
@@ -37,7 +35,9 @@ import android.view.View;
 import android.widget.ResourceCursorAdapter;
 import android.widget.TextView;
 
-import java.util.ArrayList;
+import com.android.mms.MmsApp;
+import com.android.mms.R;
+import com.android.mms.data.Contact;
 
 /**
  * This adapter is used to filter contacts on both name and number.
@@ -49,6 +49,7 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
     public static final int NUMBER_INDEX     = 3;
     public static final int LABEL_INDEX      = 4;
     public static final int NAME_INDEX       = 5;
+    public static final int NORMALIZED_NUMBER = 6;
 
     private static final String[] PROJECTION_PHONE = {
         Phone._ID,                  // 0
@@ -57,6 +58,7 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
         Phone.NUMBER,               // 3
         Phone.LABEL,                // 4
         Phone.DISPLAY_NAME,         // 5
+        Phone.NORMALIZED_NUMBER,    // 6
     };
 
     private static final String SORT_ORDER = Contacts.TIMES_CONTACTED + " DESC,"
@@ -64,6 +66,7 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
 
     private final Context mContext;
     private final ContentResolver mContentResolver;
+    private final String mDefaultCountryIso;
 
     public RecipientsAdapter(Context context) {
         // Note that the RecipientsAdapter doesn't support auto-requeries. If we
@@ -74,6 +77,7 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
         super(context, R.layout.recipient_filter_item, null, false /* no auto-requery */);
         mContext = context;
         mContentResolver = context.getContentResolver();
+        mDefaultCountryIso = MmsApp.getApplication().getCurrentCountryIso();
     }
 
     @Override
@@ -103,7 +107,8 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
                        .replace(",", " ");  // Make sure we leave a space between parts of names.
         }
 
-        String nameAndNumber = Contact.formatNameAndNumber(name, number);
+        String nameAndNumber = Contact.formatNameAndNumber( name, number,
+                cursor.getString(NORMALIZED_NUMBER));
 
         SpannableString out = new SpannableString(nameAndNumber);
         int len = out.length();
@@ -147,7 +152,9 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
         }
 
         TextView number = (TextView) view.findViewById(R.id.number);
-        number.setText(cursor.getString(NUMBER_INDEX));
+        number.setText(
+                PhoneNumberUtils.formatNumber(cursor.getString(NUMBER_INDEX),
+                        cursor.getString(NORMALIZED_NUMBER), mDefaultCountryIso));
     }
 
     @Override
@@ -168,7 +175,11 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
             }
         }
 
-        Uri uri = Uri.withAppendedPath(Phone.CONTENT_FILTER_URI, Uri.encode(cons));
+        Uri uri = Phone.CONTENT_FILTER_URI.buildUpon()
+                .appendPath(cons)
+                .appendQueryParameter(DataUsageFeedback.USAGE_TYPE,
+                        DataUsageFeedback.USAGE_TYPE_SHORT_TEXT)
+                .build();
         /*
          * if we decide to filter based on phone types use a selection
          * like this.
@@ -185,28 +196,26 @@ public class RecipientsAdapter extends ResourceCursorAdapter {
                     PROJECTION_PHONE,
                     null, //selection,
                     null,
-                    SORT_ORDER);
+                    null);
 
         if (phone.length() > 0) {
-            ArrayList result = new ArrayList();
-            result.add(Integer.valueOf(-1));                    // ID
-            result.add(Long.valueOf(-1));                       // CONTACT_ID
-            result.add(Integer.valueOf(Phone.TYPE_CUSTOM));     // TYPE
-            result.add(phone);                                  // NUMBER
+            Object[] result = new Object[7];
+            result[0] = Integer.valueOf(-1);                    // ID
+            result[1] = Long.valueOf(-1);                       // CONTACT_ID
+            result[2] = Integer.valueOf(Phone.TYPE_CUSTOM);     // TYPE
+            result[3] = phone;                                  // NUMBER
 
             /*
              * The "\u00A0" keeps Phone.getDisplayLabel() from deciding
              * to display the default label ("Home") next to the transformation
              * of the letters into numbers.
              */
-            result.add("\u00A0");                               // LABEL
-            result.add(cons);                                   // NAME
+            result[4] = "\u00A0";                               // LABEL
+            result[5] = cons;                                   // NAME
+            result[6] = phone;                                  // NORMALIZED_NUMBER
 
-            ArrayList<ArrayList> wrap = new ArrayList<ArrayList>();
-            wrap.add(result);
-
-            ArrayListCursor translated = new ArrayListCursor(PROJECTION_PHONE, wrap);
-
+            MatrixCursor translated = new MatrixCursor(PROJECTION_PHONE, 1);
+            translated.addRow(result);
             return new MergeCursor(new Cursor[] { translated, phoneCursor });
         } else {
             return phoneCursor;

@@ -30,13 +30,12 @@
         android:id="@+id/audio_icon"
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
-        android:src="@drawable/ic_launcher_record_audio" />
+        android:src="@drawable/ic_attach_capture_audio_holo_light" />
 
      <TextView android:id="@+id/name"
          android:layout_width="wrap_content"
          android:layout_height="match_parent"
          android:singleLine="true"
-         android:textStyle="bold"
-         android:textColor="@drawable/text_color_offwhite" />
+         android:textStyle="bold" />
 
 </LinearLayout>

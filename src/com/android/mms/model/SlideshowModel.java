@@ -18,22 +18,16 @@
 package com.android.mms.model;
 
 
-import com.android.mms.ContentRestrictionException;
-import com.android.mms.ExceedMessageSizeException;
-import com.android.mms.MmsConfig;
-import com.android.mms.R;
-import com.android.mms.dom.smil.parser.SmilXmlSerializer;
-import android.drm.mobile1.DrmException;
-import com.android.mms.drm.DrmWrapper;
-import com.android.mms.layout.LayoutManager;
-import com.google.android.mms.ContentType;
-import com.google.android.mms.MmsException;
-import com.google.android.mms.pdu.GenericPdu;
-import com.google.android.mms.pdu.MultimediaMessagePdu;
-import com.google.android.mms.pdu.PduBody;
-import com.google.android.mms.pdu.PduHeaders;
-import com.google.android.mms.pdu.PduPart;
-import com.google.android.mms.pdu.PduPersister;
+import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.ListIterator;
 
 import org.w3c.dom.NodeList;
 import org.w3c.dom.events.EventTarget;
@@ -45,20 +39,27 @@ import org.w3c.dom.smil.SMILParElement;
 import org.w3c.dom.smil.SMILRegionElement;
 import org.w3c.dom.smil.SMILRootLayoutElement;
 
+import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.Context;
 import android.net.Uri;
 import android.text.TextUtils;
 import android.util.Log;
-import android.widget.Toast;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.ListIterator;
+import com.android.mms.ContentRestrictionException;
+import com.android.mms.ExceedMessageSizeException;
+import com.android.mms.LogTag;
+import com.android.mms.MmsConfig;
+import com.android.mms.dom.smil.parser.SmilXmlSerializer;
+import com.android.mms.layout.LayoutManager;
+import com.google.android.mms.ContentType;
+import com.google.android.mms.MmsException;
+import com.google.android.mms.pdu.GenericPdu;
+import com.google.android.mms.pdu.MultimediaMessagePdu;
+import com.google.android.mms.pdu.PduBody;
+import com.google.android.mms.pdu.PduHeaders;
+import com.google.android.mms.pdu.PduPart;
+import com.google.android.mms.pdu.PduPersister;
 
 public class SlideshowModel extends Model
         implements List<SlideModel>, IModelChangedObserver {
@@ -68,7 +69,9 @@ public class SlideshowModel extends Model
     private final ArrayList<SlideModel> mSlides;
     private SMILDocument mDocumentCache;
     private PduBody mPduBodyCache;
-    private int mCurrentMessageSize;
+    private int mCurrentMessageSize;    // This is the current message size, not including
+                                        // attachments that can be resized (such as photos)
+    private int mTotalMessageSize;      // This is the computed total message size
     private Context mContext;
 
     // amount of space to leave in a slideshow for text and overhead.
@@ -141,6 +144,7 @@ public class SlideshowModel extends Model
         NodeList slideNodes = docBody.getChildNodes();
         int slidesNum = slideNodes.getLength();
         ArrayList<SlideModel> slides = new ArrayList<SlideModel>(slidesNum);
+        int totalMessageSize = 0;
 
         for (int i = 0; i < slidesNum; i++) {
             // FIXME: This is NOT compatible with the SMILDocument which is
@@ -205,8 +209,7 @@ public class SlideshowModel extends Model
                     SmilHelper.addMediaElementEventListeners(
                             (EventTarget) sme, media);
                     mediaSet.add(media);
-                } catch (DrmException e) {
-                    Log.e(TAG, e.getMessage(), e);
+                    totalMessageSize += media.getMediaSize();
                 } catch (IOException e) {
                     Log.e(TAG, e.getMessage(), e);
                 } catch (IllegalArgumentException e) {
@@ -221,6 +224,7 @@ public class SlideshowModel extends Model
         }
 
         SlideshowModel slideshow = new SlideshowModel(layouts, slides, document, pb, context);
+        slideshow.mTotalMessageSize = totalMessageSize;
         slideshow.registerModelChangedObserver(slideshow);
         return slideshow;
     }
@@ -234,22 +238,11 @@ public class SlideshowModel extends Model
     }
 
     private PduBody makePduBody(SMILDocument document) {
-        return makePduBody(null, document, false);
-    }
-
-    private PduBody makePduBody(Context context, SMILDocument document, boolean isMakingCopy) {
         PduBody pb = new PduBody();
 
         boolean hasForwardLock = false;
         for (SlideModel slide : mSlides) {
             for (MediaModel media : slide) {
-                if (isMakingCopy) {
-                    if (media.isDrmProtected() && !media.isAllowedToForward()) {
-                        hasForwardLock = true;
-                        continue;
-                    }
-                }
-
                 PduPart part = new PduPart();
 
                 if (media.isText()) {
@@ -289,11 +282,7 @@ public class SlideshowModel extends Model
                     part.setContentId(contentId.getBytes());
                 }
 
-                if (media.isDrmProtected()) {
-                    DrmWrapper wrapper = media.getDrmObject();
-                    part.setDataUri(wrapper.getOriginalUri());
-                    part.setData(wrapper.getOriginalData());
-                } else if (media.isText()) {
+                if (media.isText()) {
                     part.setData(((TextModel) media).getText().getBytes());
                 } else if (media.isImage() || media.isVideo() || media.isAudio()) {
                     part.setDataUri(media.getUri());
@@ -303,13 +292,6 @@ public class SlideshowModel extends Model
 
                 pb.addPart(part);
             }
-        }
-
-        if (hasForwardLock && isMakingCopy && context != null) {
-            Toast.makeText(context,
-                    context.getString(R.string.cannot_forward_drm_obj),
-                    Toast.LENGTH_LONG).show();
-            document = SmilHelper.getDocument(pb);
         }
 
         // Create and insert SMIL part(as the first part) into the PduBody.
@@ -325,8 +307,34 @@ public class SlideshowModel extends Model
         return pb;
     }
 
-    public PduBody makeCopy(Context context) {
-        return makePduBody(context, SmilHelper.getDocument(this), true);
+    public HashMap<Uri, InputStream> openPartFiles(ContentResolver cr) {
+        HashMap<Uri, InputStream> openedFiles = null;     // Don't create unless we have to
+
+        for (SlideModel slide : mSlides) {
+            for (MediaModel media : slide) {
+                if (media.isText()) {
+                    continue;
+                }
+                Uri uri = media.getUri();
+                InputStream is;
+                try {
+                    is = cr.openInputStream(uri);
+                    if (is != null) {
+                        if (openedFiles == null) {
+                            openedFiles = new HashMap<Uri, InputStream>();
+                        }
+                        openedFiles.put(uri, is);
+                    }
+                } catch (FileNotFoundException e) {
+                    Log.e(TAG, "openPartFiles couldn't open: " + uri, e);
+                }
+            }
+        }
+        return openedFiles;
+    }
+
+    public PduBody makeCopy() {
+        return makePduBody(SmilHelper.getDocument(this));
     }
 
     public SMILDocument toSmilDocument() {
@@ -353,8 +361,22 @@ public class SlideshowModel extends Model
         mCurrentMessageSize = size;
     }
 
+    // getCurrentMessageSize returns the size of the message, not including resizable attachments
+    // such as photos. mCurrentMessageSize is used when adding/deleting/replacing non-resizable
+    // attachments (movies, sounds, etc) in order to compute how much size is left in the message.
+    // The difference between mCurrentMessageSize and the maxSize allowed for a message is then
+    // divided up between the remaining resizable attachments. While this function is public,
+    // it is only used internally between various MMS classes. If the UI wants to know the
+    // size of a MMS message, it should call getTotalMessageSize() instead.
     public int getCurrentMessageSize() {
         return mCurrentMessageSize;
+    }
+
+    // getTotalMessageSize returns the total size of the message, including resizable attachments
+    // such as photos. This function is intended to be used by the UI for displaying the size of the
+    // MMS message.
+    public int getTotalMessageSize() {
+        return mTotalMessageSize;
     }
 
     public void increaseMessageSize(int increaseSize) {
@@ -639,8 +661,6 @@ public class SlideshowModel extends Model
      * @throws MmsException, ExceedMessageSizeException
      */
     public void finalResize(Uri messageUri) throws MmsException, ExceedMessageSizeException {
-//        Log.v(TAG, "Original message size: " + getCurrentMessageSize() + " getMaxMessageSize: "
-//                + MmsConfig.getMaxMessageSize());
 
         // Figure out if we have any media items that need to be resized and total up the
         // sizes of the items that can't be resized.
@@ -654,6 +674,11 @@ public class SlideshowModel extends Model
                     fixedSizeTotal += media.getMediaSize();
                 }
             }
+        }
+        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+            Log.v(TAG, "finalResize: original message size: " + getCurrentMessageSize() +
+                    " getMaxMessageSize: " + MmsConfig.getMaxMessageSize() +
+                    " fixedSizeTotal: " + fixedSizeTotal);
         }
         if (resizableCnt > 0) {
             int remainingSize = MmsConfig.getMaxMessageSize() - fixedSizeTotal - SLIDESHOW_SLOP;
@@ -677,8 +702,9 @@ public class SlideshowModel extends Model
                     totalSize += media.getMediaSize();
                 }
             }
-//            Log.v(TAG, "New message size: " + totalSize + " getMaxMessageSize: "
-//                    + MmsConfig.getMaxMessageSize());
+            if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+                Log.v(TAG, "finalResize: new message size: " + totalSize);
+            }
 
             if (totalSize > MmsConfig.getMaxMessageSize()) {
                 throw new ExceedMessageSizeException("After compressing pictures, message too big");
@@ -690,7 +716,7 @@ public class SlideshowModel extends Model
             // This will write out all the new parts to:
             //      /data/data/com.android.providers.telephony/app_parts
             // and at the same time delete the old parts.
-            PduPersister.getPduPersister(mContext).updateParts(messageUri, pb);
+            PduPersister.getPduPersister(mContext).updateParts(messageUri, pb, null);
         }
     }
 

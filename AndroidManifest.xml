@@ -26,6 +26,7 @@
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_PROFILE" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_MMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
@@ -39,27 +40,31 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.INSTALL_DRM" />
+    <uses-permission android:name="android.permission.WRITE_APN_SETTINGS" />
 
     <application android:name="MmsApp"
             android:label="@string/app_label"
-            android:icon="@drawable/ic_launcher_smsmms"
+            android:icon="@mipmap/ic_launcher_smsmms"
             android:taskAffinity="android.task.mms"
             android:allowTaskReparenting="true">
 
         <service android:name=".transaction.TransactionService"
-                 android:exported="true" />
+                 android:exported="false" />
 
         <service android:name=".transaction.SmsReceiverService"
-                 android:exported="true" />
+                 android:exported="false" />
 
         <activity android:name=".ui.ConversationList"
                   android:label="@string/app_label"
-                  android:configChanges="orientation|keyboardHidden"
+                  android:configChanges="orientation|screenSize|keyboardHidden"
+                  android:theme="@style/MmsHoloTheme"
+                  android:uiOptions="splitActionBarWhenNarrow"
                   android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.APP_MESSAGING" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -74,8 +79,10 @@
         </activity>
 
         <activity android:name=".ui.ComposeMessageActivity"
-                  android:configChanges="orientation|keyboardHidden"
-                  android:windowSoftInputMode="stateHidden"
+                  android:configChanges="orientation|screenSize|keyboardHidden"
+                  android:windowSoftInputMode="stateHidden|adjustResize"
+                  android:theme="@style/MmsHoloTheme"
+                  android:parentActivityName=".ui.ConversationList"
                   android:launchMode="singleTop" >
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -106,25 +113,29 @@
            <intent-filter>
                <action android:name="android.intent.action.SEND" />
                <category android:name="android.intent.category.DEFAULT" />
-               <data android:mimeType="video/*" />
-           </intent-filter>
-           <intent-filter>
-               <action android:name="android.intent.action.SEND" />
-               <category android:name="android.intent.category.DEFAULT" />
                <data android:mimeType="text/plain" />
            </intent-filter>
            <intent-filter>
                <action android:name="android.intent.action.SEND_MULTIPLE" />
                <category android:name="android.intent.category.DEFAULT" />
-               <data android:mimeType="*/*" />
+               <data android:mimeType="image/*" />
            </intent-filter>
         </activity>
 
         <activity-alias android:name=".ui.ForwardMessageActivity"
                   android:targetActivity=".ui.ComposeMessageActivity"
-                  android:configChanges="orientation|keyboardHidden"
-                  android:windowSoftInputMode="stateHidden" >
+                  android:configChanges="orientation|screenSize|keyboardHidden"
+                  android:windowSoftInputMode="stateHidden"
+                  android:theme="@style/MmsHoloTheme" >
         </activity-alias>
+
+        <activity android:name=".ui.ComposeMessageActivityNoLockScreen"
+                  android:configChanges="orientation|screenSize|keyboardHidden"
+                  android:windowSoftInputMode="stateHidden"
+                  android:theme="@style/MmsHoloTheme"
+                  android:exported="false"
+                  android:launchMode="singleTop" >
+        </activity>
 
         <activity android:name=".ui.DeliveryReportActivity"
             android:label="@string/delivery_report_activity"
@@ -143,14 +154,22 @@
         </activity>
 
         <activity android:name=".ui.SlideshowEditActivity"
+            android:theme="@style/MmsHoloTheme"
             android:label="@string/edit_slideshow_activity" />
+
+        <activity android:name=".ui.RecipientListActivity"
+            android:theme="@style/MmsHoloTheme"
+            android:label="@string/recipient_list_activity" />
 
         <activity android:name=".ui.SlideEditorActivity"
             android:windowSoftInputMode="adjustResize"
+            android:theme="@style/MmsHoloTheme"
             android:label="@string/edit_slide_activity" />
 
         <activity android:name=".ui.SlideshowActivity"
             android:noHistory="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/MmsHoloTheme"
             android:label="@string/slideshow_activity">
         </activity>
 
@@ -161,6 +180,8 @@
         </activity>
 
         <activity android:name=".ui.MessagingPreferenceActivity"
+            android:theme="@style/MmsHoloTheme"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:label="@string/preferences_title" />
 
         <receiver android:name=".transaction.PushReceiver"
@@ -176,12 +197,17 @@
                 <action android:name="android.intent.action.CONTENT_CHANGED" />
             </intent-filter>
             <intent-filter>
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+            </intent-filter>
+            <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
         <activity android:name=".ui.ManageSimMessages"
+                  android:theme="@style/MmsHoloTheme"
                   android:launchMode="singleTop"
+                  android:configChanges="orientation|screenSize|keyboardHidden"
                   android:label="@string/sim_manage_messages_title">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -217,6 +243,8 @@
             </intent-filter>
         </receiver>
 
+        <service android:name=".transaction.MessageStatusService"/>
+
         <receiver android:name=".transaction.SimFullReceiver">
             <intent-filter>
                 <action android:name="android.provider.Telephony.SIM_FULL" />
@@ -238,8 +266,9 @@
         </activity>
 
         <activity android:name=".ui.SearchActivity"
+            android:theme="@style/MmsHoloTheme"
             android:label="@string/search"
-            android:configChanges="orientation|keyboardHidden" >
+            android:configChanges="orientation|screenSize|keyboardHidden" >
             <intent-filter>
                 <action android:name="android.intent.action.SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -253,6 +282,7 @@
 
         <!-- Search Suggestions Provider -->
         <provider android:name="SuggestionsProvider"
+            android:exported="true"
             android:readPermission="android.permission.READ_SMS"
             android:authorities="com.android.mms.SuggestionsProvider" >
             <path-permission
@@ -262,6 +292,45 @@
                     android:pathPrefix="/search_suggest_shortcut"
                     android:readPermission="android.permission.GLOBAL_SEARCH" />
         </provider>
+
+        <service android:name=".ui.NoConfirmationSendService"
+                 android:permission="android.permission.SEND_SMS_NO_CONFIRMATION"
+                 android:exported="true" >
+            <intent-filter>
+                <action android:name="com.android.mms.intent.action.SENDTO_NO_CONFIRMATION" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+            </intent-filter>
+        </service>
+
+        <provider android:name="TempFileProvider"
+                  android:exported="true"
+                  android:authorities="mms_temp_file"
+                  android:multiprocess="true" />
+
+        <activity android:name=".ui.MiniPreferenceActivity" >
+            <intent-filter>
+                <action android:name="com.android.mms.intent.action.MESSAGING_APP_NOTIFICATIONS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Widget -->
+        <receiver android:name=".widget.MmsWidgetProvider"  android:label="@string/app_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.android.mms.intent.action.ACTION_NOTIFY_DATASET_CHANGED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider"
+                       android:resource="@xml/widget_info" />
+        </receiver>
+        <service android:name=".widget.MmsWidgetService"
+                 android:permission="android.permission.BIND_REMOTEVIEWS"
+                 android:exported="false" />
+
 
     </application>
 </manifest>

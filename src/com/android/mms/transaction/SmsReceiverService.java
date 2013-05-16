@@ -20,12 +20,8 @@ package com.android.mms.transaction;
 import static android.content.Intent.ACTION_BOOT_COMPLETED;
 import static android.provider.Telephony.Sms.Intents.SMS_RECEIVED_ACTION;
 
-import com.android.mms.data.Contact;
-import com.android.mms.ui.ClassZeroActivity;
-import com.android.mms.util.Recycler;
-import com.android.mms.util.SendingProgressTokenManager;
-import com.google.android.mms.MmsException;
-import android.database.sqlite.SqliteWrapper;
+import java.util.Calendar;
+import java.util.GregorianCalendar;
 
 import android.app.Activity;
 import android.app.Service;
@@ -36,6 +32,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -44,11 +41,9 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.Process;
 import android.provider.Telephony.Sms;
-import android.provider.Telephony.Threads;
 import android.provider.Telephony.Sms.Inbox;
 import android.provider.Telephony.Sms.Intents;
 import android.provider.Telephony.Sms.Outbox;
-import android.provider.Telephony;
 import android.telephony.ServiceState;
 import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
@@ -57,8 +52,15 @@ import android.util.Log;
 import android.widget.Toast;
 
 import com.android.internal.telephony.TelephonyIntents;
-import com.android.mms.R;
 import com.android.mms.LogTag;
+import com.android.mms.R;
+import com.android.mms.data.Contact;
+import com.android.mms.data.Conversation;
+import com.android.mms.ui.ClassZeroActivity;
+import com.android.mms.util.Recycler;
+import com.android.mms.util.SendingProgressTokenManager;
+import com.android.mms.widget.MmsWidgetProvider;
+import com.google.android.mms.MmsException;
 
 /**
  * This service essentially plays the role of a "worker thread", allowing us to store
@@ -79,7 +81,9 @@ public class SmsReceiverService extends Service {
     public static final String EXTRA_MESSAGE_SENT_SEND_NEXT ="SendNextMsg";
 
     public static final String ACTION_SEND_MESSAGE =
-        "com.android.mms.transaction.SEND_MESSAGE";
+            "com.android.mms.transaction.SEND_MESSAGE";
+    public static final String ACTION_SEND_INACTIVE_MESSAGE =
+            "com.android.mms.transaction.SEND_INACTIVE_MESSAGE";
 
     // This must match the column IDs below.
     private static final String[] SEND_PROJECTION = new String[] {
@@ -105,7 +109,7 @@ public class SmsReceiverService extends Service {
     @Override
     public void onCreate() {
         // Temporarily removed for this duplicate message track down.
-//        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+//        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
 //            Log.v(TAG, "onCreate");
 //        }
 
@@ -122,11 +126,13 @@ public class SmsReceiverService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         // Temporarily removed for this duplicate message track down.
-//        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
-//            Log.v(TAG, "onStart: #" + startId + ": " + intent.getExtras());
-//        }
 
         mResultCode = intent != null ? intent.getIntExtra("result", 0) : 0;
+
+        if (mResultCode != 0) {
+            Log.v(TAG, "onStart: #" + startId + " mResultCode: " + mResultCode +
+                    " = " + translateResultCode(mResultCode));
+        }
 
         Message msg = mServiceHandler.obtainMessage();
         msg.arg1 = startId;
@@ -135,10 +141,31 @@ public class SmsReceiverService extends Service {
         return Service.START_NOT_STICKY;
     }
 
+    private static String translateResultCode(int resultCode) {
+        switch (resultCode) {
+            case Activity.RESULT_OK:
+                return "Activity.RESULT_OK";
+            case SmsManager.RESULT_ERROR_GENERIC_FAILURE:
+                return "SmsManager.RESULT_ERROR_GENERIC_FAILURE";
+            case SmsManager.RESULT_ERROR_RADIO_OFF:
+                return "SmsManager.RESULT_ERROR_RADIO_OFF";
+            case SmsManager.RESULT_ERROR_NULL_PDU:
+                return "SmsManager.RESULT_ERROR_NULL_PDU";
+            case SmsManager.RESULT_ERROR_NO_SERVICE:
+                return "SmsManager.RESULT_ERROR_NO_SERVICE";
+            case SmsManager.RESULT_ERROR_LIMIT_EXCEEDED:
+                return "SmsManager.RESULT_ERROR_LIMIT_EXCEEDED";
+            case SmsManager.RESULT_ERROR_FDN_CHECK_FAILURE:
+                return "SmsManager.RESULT_ERROR_FDN_CHECK_FAILURE";
+            default:
+                return "Unknown error code";
+        }
+    }
+
     @Override
     public void onDestroy() {
         // Temporarily removed for this duplicate message track down.
-//        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+//        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
 //            Log.v(TAG, "onDestroy");
 //        }
         mServiceLooper.quit();
@@ -162,10 +189,17 @@ public class SmsReceiverService extends Service {
         public void handleMessage(Message msg) {
             int serviceId = msg.arg1;
             Intent intent = (Intent)msg.obj;
+            if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+                Log.v(TAG, "handleMessage serviceId: " + serviceId + " intent: " + intent);
+            }
             if (intent != null) {
                 String action = intent.getAction();
 
                 int error = intent.getIntExtra("errorCode", 0);
+
+                if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+                    Log.v(TAG, "handleMessage action: " + action + " error: " + error);
+                }
 
                 if (MESSAGE_SENT_ACTION.equals(intent.getAction())) {
                     handleSmsSent(intent, error);
@@ -177,6 +211,8 @@ public class SmsReceiverService extends Service {
                     handleServiceStateChanged(intent);
                 } else if (ACTION_SEND_MESSAGE.endsWith(action)) {
                     handleSendMessage();
+                } else if (ACTION_SEND_INACTIVE_MESSAGE.equals(action)) {
+                    handleSendInactiveMessage();
                 }
             }
             // NOTE: We MUST not call stopSelf() directly, since we need to
@@ -197,6 +233,12 @@ public class SmsReceiverService extends Service {
         if (!mSending) {
             sendFirstQueuedMessage();
         }
+    }
+
+    private void handleSendInactiveMessage() {
+        // Inactive messages includes all messages in outbox and queued box.
+        moveOutboxMessagesToQueuedBox();
+        sendFirstQueuedMessage();
     }
 
     public synchronized void sendFirstQueuedMessage() {
@@ -223,7 +265,9 @@ public class SmsReceiverService extends Service {
                             address, msgText, threadId, status == Sms.STATUS_PENDING,
                             msgUri);
 
-                    if (LogTag.VERBOSE || Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+                    if (LogTag.DEBUG_SEND ||
+                            LogTag.VERBOSE ||
+                            Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
                         Log.v(TAG, "sendFirstQueuedMessage " + msgUri +
                                 ", address: " + address +
                                 ", threadId: " + threadId);
@@ -238,6 +282,12 @@ public class SmsReceiverService extends Service {
                         mSending = false;
                         messageFailedToSend(msgUri, SmsManager.RESULT_ERROR_GENERIC_FAILURE);
                         success = false;
+                        // Sending current message fails. Try to send more pending messages
+                        // if there is any.
+                        sendBroadcast(new Intent(SmsReceiverService.ACTION_SEND_MESSAGE,
+                                null,
+                                this,
+                                SmsReceiver.class));
                     }
                 }
             } finally {
@@ -256,9 +306,15 @@ public class SmsReceiverService extends Service {
         mSending = false;
         boolean sendNextMsg = intent.getBooleanExtra(EXTRA_MESSAGE_SENT_SEND_NEXT, false);
 
+        if (LogTag.DEBUG_SEND) {
+            Log.v(TAG, "handleSmsSent uri: " + uri + " sendNextMsg: " + sendNextMsg +
+                    " mResultCode: " + mResultCode +
+                    " = " + translateResultCode(mResultCode) + " error: " + error);
+        }
+
         if (mResultCode == Activity.RESULT_OK) {
-            if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
-                Log.v(TAG, "handleSmsSent sending uri: " + uri);
+            if (LogTag.DEBUG_SEND || Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+                Log.v(TAG, "handleSmsSent move message to sent folder uri: " + uri);
             }
             if (!Sms.moveMessageToFolder(this, uri, Sms.MESSAGE_TYPE_SENT, error)) {
                 Log.e(TAG, "handleSmsSent: failed to move message " + uri + " to sent folder");
@@ -268,7 +324,7 @@ public class SmsReceiverService extends Service {
             }
 
             // Update the notification for failed messages since they may be deleted.
-            MessagingNotification.updateSendFailedNotification(this);
+            MessagingNotification.nonBlockingUpdateSendFailedNotification(this);
         } else if ((mResultCode == SmsManager.RESULT_ERROR_RADIO_OFF) ||
                 (mResultCode == SmsManager.RESULT_ERROR_NO_SERVICE)) {
             if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
@@ -302,8 +358,8 @@ public class SmsReceiverService extends Service {
     }
 
     private void messageFailedToSend(Uri uri, int error) {
-        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
-            Log.v(TAG, "messageFailedToSend msg failed uri: " + uri);
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
+            Log.v(TAG, "messageFailedToSend msg failed uri: " + uri + " error: " + error);
         }
         Sms.moveMessageToFolder(this, uri, Sms.MESSAGE_TYPE_FAILED, error);
         MessagingNotification.notifySendFailed(getApplicationContext(), true);
@@ -311,9 +367,10 @@ public class SmsReceiverService extends Service {
 
     private void handleSmsReceived(Intent intent, int error) {
         SmsMessage[] msgs = Intents.getMessagesFromIntent(intent);
-        Uri messageUri = insertMessage(this, msgs, error);
+        String format = intent.getStringExtra("format");
+        Uri messageUri = insertMessage(this, msgs, error, format);
 
-        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
             SmsMessage sms = msgs[0];
             Log.v(TAG, "handleSmsReceived" + (sms.isReplace() ? "(replace)" : "") +
                     " messageUri: " + messageUri +
@@ -322,27 +379,66 @@ public class SmsReceiverService extends Service {
         }
 
         if (messageUri != null) {
+            long threadId = MessagingNotification.getSmsThreadId(this, messageUri);
             // Called off of the UI thread so ok to block.
-            MessagingNotification.blockingUpdateNewMessageIndicator(this, true, false);
+            Log.d(TAG, "handleSmsReceived messageUri: " + messageUri + " threadId: " + threadId);
+            MessagingNotification.blockingUpdateNewMessageIndicator(this, threadId, false);
         }
     }
 
     private void handleBootCompleted() {
-        moveOutboxMessagesToQueuedBox();
+        // Some messages may get stuck in the outbox. At this point, they're probably irrelevant
+        // to the user, so mark them as failed and notify the user, who can then decide whether to
+        // resend them manually.
+        int numMoved = moveOutboxMessagesToFailedBox();
+        if (numMoved > 0) {
+            MessagingNotification.notifySendFailed(getApplicationContext(), true);
+        }
+
+        // Send any queued messages that were waiting from before the reboot.
         sendFirstQueuedMessage();
 
         // Called off of the UI thread so ok to block.
-        MessagingNotification.blockingUpdateNewMessageIndicator(this, true, false);
+        MessagingNotification.blockingUpdateNewMessageIndicator(
+                this, MessagingNotification.THREAD_ALL, false);
     }
 
-    private void moveOutboxMessagesToQueuedBox() {
+    /**
+     * Move all messages that are in the outbox to the queued state
+     * @return The number of messages that were actually moved
+     */
+    private int moveOutboxMessagesToQueuedBox() {
         ContentValues values = new ContentValues(1);
 
         values.put(Sms.TYPE, Sms.MESSAGE_TYPE_QUEUED);
 
-        SqliteWrapper.update(
+        int messageCount = SqliteWrapper.update(
                 getApplicationContext(), getContentResolver(), Outbox.CONTENT_URI,
                 values, "type = " + Sms.MESSAGE_TYPE_OUTBOX, null);
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
+            Log.v(TAG, "moveOutboxMessagesToQueuedBox messageCount: " + messageCount);
+        }
+        return messageCount;
+    }
+
+    /**
+     * Move all messages that are in the outbox to the failed state and set them to unread.
+     * @return The number of messages that were actually moved
+     */
+    private int moveOutboxMessagesToFailedBox() {
+        ContentValues values = new ContentValues(3);
+
+        values.put(Sms.TYPE, Sms.MESSAGE_TYPE_FAILED);
+        values.put(Sms.ERROR_CODE, SmsManager.RESULT_ERROR_GENERIC_FAILURE);
+        values.put(Sms.READ, Integer.valueOf(0));
+
+        int messageCount = SqliteWrapper.update(
+                getApplicationContext(), getContentResolver(), Outbox.CONTENT_URI,
+                values, "type = " + Sms.MESSAGE_TYPE_OUTBOX, null);
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
+            Log.v(TAG, "moveOutboxMessagesToFailedBox messageCount: " + messageCount);
+        }
+        return messageCount;
     }
 
     public static final String CLASS_ZERO_BODY_KEY = "CLASS_ZERO_BODY";
@@ -364,12 +460,12 @@ public class SmsReceiverService extends Service {
      * <code>Uri</code> of the thread containing this message
      * so that we can use it for notification.
      */
-    private Uri insertMessage(Context context, SmsMessage[] msgs, int error) {
+    private Uri insertMessage(Context context, SmsMessage[] msgs, int error, String format) {
         // Build the helper classes to parse the messages.
         SmsMessage sms = msgs[0];
 
         if (sms.getMessageClass() == SmsMessage.MessageClass.CLASS_0) {
-            displayClassZeroMessage(context, sms);
+            displayClassZeroMessage(context, sms, format);
             return null;
         } else if (sms.isReplace()) {
             return replaceMessage(context, msgs, error);
@@ -390,9 +486,23 @@ public class SmsReceiverService extends Service {
     private Uri replaceMessage(Context context, SmsMessage[] msgs, int error) {
         SmsMessage sms = msgs[0];
         ContentValues values = extractContentValues(sms);
-
-        values.put(Inbox.BODY, sms.getMessageBody());
         values.put(Sms.ERROR_CODE, error);
+        int pduCount = msgs.length;
+
+        if (pduCount == 1) {
+            // There is only one part, so grab the body directly.
+            values.put(Inbox.BODY, replaceFormFeeds(sms.getDisplayMessageBody()));
+        } else {
+            // Build up the body from the parts.
+            StringBuilder body = new StringBuilder();
+            for (int i = 0; i < pduCount; i++) {
+                sms = msgs[i];
+                if (sms.mWrappedSmsMessage != null) {
+                    body.append(sms.getDisplayMessageBody());
+                }
+            }
+            values.put(Inbox.BODY, replaceFormFeeds(body.toString()));
+        }
 
         ContentResolver resolver = context.getContentResolver();
         String originatingAddress = sms.getOriginatingAddress();
@@ -425,6 +535,13 @@ public class SmsReceiverService extends Service {
         return storeMessage(context, msgs, error);
     }
 
+    public static String replaceFormFeeds(String s) {
+        // Some providers send formfeeds in their messages. Convert those formfeeds to newlines.
+        return s == null ? "" : s.replace('\f', '\n');
+    }
+
+//    private static int count = 0;
+
     private Uri storeMessage(Context context, SmsMessage[] msgs, int error) {
         SmsMessage sms = msgs[0];
 
@@ -435,21 +552,37 @@ public class SmsReceiverService extends Service {
 
         if (pduCount == 1) {
             // There is only one part, so grab the body directly.
-            values.put(Inbox.BODY, sms.getDisplayMessageBody());
+            values.put(Inbox.BODY, replaceFormFeeds(sms.getDisplayMessageBody()));
         } else {
             // Build up the body from the parts.
             StringBuilder body = new StringBuilder();
             for (int i = 0; i < pduCount; i++) {
                 sms = msgs[i];
-                body.append(sms.getDisplayMessageBody());
+                if (sms.mWrappedSmsMessage != null) {
+                    body.append(sms.getDisplayMessageBody());
+                }
             }
-            values.put(Inbox.BODY, body.toString());
+            values.put(Inbox.BODY, replaceFormFeeds(body.toString()));
         }
 
         // Make sure we've got a thread id so after the insert we'll be able to delete
         // excess messages.
         Long threadId = values.getAsLong(Sms.THREAD_ID);
         String address = values.getAsString(Sms.ADDRESS);
+
+        // Code for debugging and easy injection of short codes, non email addresses, etc.
+        // See Contact.isAlphaNumber() for further comments and results.
+//        switch (count++ % 8) {
+//            case 0: address = "AB12"; break;
+//            case 1: address = "12"; break;
+//            case 2: address = "Jello123"; break;
+//            case 3: address = "T-Mobile"; break;
+//            case 4: address = "Mobile1"; break;
+//            case 5: address = "Dogs77"; break;
+//            case 6: address = "****1"; break;
+//            case 7: address = "#4#5#6#"; break;
+//        }
+
         if (!TextUtils.isEmpty(address)) {
             Contact cacheContact = Contact.get(address,true);
             if (cacheContact != null) {
@@ -461,7 +594,7 @@ public class SmsReceiverService extends Service {
         }
 
         if (((threadId == null) || (threadId == 0)) && (address != null)) {
-            threadId = Threads.getOrCreateThreadId(context, address);
+            threadId = Conversation.getOrCreateThreadId(context, address);
             values.put(Sms.THREAD_ID, threadId);
         }
 
@@ -470,7 +603,8 @@ public class SmsReceiverService extends Service {
         Uri insertedUri = SqliteWrapper.insert(context, resolver, Inbox.CONTENT_URI, values);
 
         // Now make sure we're not over the limit in stored messages
-        Recycler.getSmsRecycler().deleteOldMessagesByThreadId(getApplicationContext(), threadId);
+        Recycler.getSmsRecycler().deleteOldMessagesByThreadId(context, threadId);
+        MmsWidgetProvider.notifyDatasetChanged(context);
 
         return insertedUri;
     }
@@ -487,7 +621,21 @@ public class SmsReceiverService extends Service {
 
         // Use now for the timestamp to avoid confusion with clock
         // drift between the handset and the SMSC.
-        values.put(Inbox.DATE, new Long(System.currentTimeMillis()));
+        // Check to make sure the system is giving us a non-bogus time.
+        Calendar buildDate = new GregorianCalendar(2011, 8, 18);    // 18 Sep 2011
+        Calendar nowDate = new GregorianCalendar();
+        long now = System.currentTimeMillis();
+        nowDate.setTimeInMillis(now);
+
+        if (nowDate.before(buildDate)) {
+            // It looks like our system clock isn't set yet because the current time right now
+            // is before an arbitrary time we made this build. Instead of inserting a bogus
+            // receive time in this case, use the timestamp of when the message was sent.
+            now = sms.getTimestampMillis();
+        }
+
+        values.put(Inbox.DATE, new Long(now));
+        values.put(Inbox.DATE_SENT, Long.valueOf(sms.getTimestampMillis()));
         values.put(Inbox.PROTOCOL, sms.getProtocolIdentifier());
         values.put(Inbox.READ, 0);
         values.put(Inbox.SEEN, 0);
@@ -505,11 +653,12 @@ public class SmsReceiverService extends Service {
      * the body of the message
      *
      */
-    private void displayClassZeroMessage(Context context, SmsMessage sms) {
+    private void displayClassZeroMessage(Context context, SmsMessage sms, String format) {
         // Using NEW_TASK here is necessary because we're calling
         // startActivity from outside an activity.
         Intent smsDialogIntent = new Intent(context, ClassZeroActivity.class)
                 .putExtra("pdu", sms.getPdu())
+                .putExtra("format", format)
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                           | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
 
@@ -522,7 +671,7 @@ public class SmsReceiverService extends Service {
 
         IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(TelephonyIntents.ACTION_SERVICE_STATE_CHANGED);
-        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
             Log.v(TAG, "registerForServiceStateChanges");
         }
 
@@ -530,7 +679,7 @@ public class SmsReceiverService extends Service {
     }
 
     private void unRegisterForServiceStateChanges() {
-        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE) || LogTag.DEBUG_SEND) {
             Log.v(TAG, "unRegisterForServiceStateChanges");
         }
         try {
@@ -540,7 +689,6 @@ public class SmsReceiverService extends Service {
             // Allow un-matched register-unregister calls
         }
     }
-
 }
 
 

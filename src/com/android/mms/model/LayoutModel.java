@@ -17,13 +17,13 @@
 
 package com.android.mms.model;
 
-import com.android.mms.layout.LayoutManager;
-import com.android.mms.layout.LayoutParameters;
+import java.util.ArrayList;
 
 import android.util.Config;
 import android.util.Log;
 
-import java.util.ArrayList;
+import com.android.mms.layout.LayoutManager;
+import com.android.mms.layout.LayoutParameters;
 
 public class LayoutModel extends Model {
     private static final String TAG = SlideModel.TAG;
@@ -110,6 +110,11 @@ public class LayoutModel extends Model {
         if (mTextRegion == null) {
             createDefaultTextRegion();
         }
+        // LayoutModel will re-construct when orientation changes, so we need to
+        // initialize mLayoutType here. Otherwise, the mLayoutType is alway default
+        // value (LAYOUT_BOTTOM_TEXT) after LayoutModel re-construct.
+        mLayoutType =
+                (mImageRegion.getTop() == 0) ? LAYOUT_BOTTOM_TEXT : LAYOUT_TOP_TEXT;
     }
 
     public RegionModel getRootLayout() {

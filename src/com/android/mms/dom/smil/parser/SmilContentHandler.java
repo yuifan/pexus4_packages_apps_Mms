@@ -17,21 +17,20 @@
 
 package com.android.mms.dom.smil.parser;
 
-import android.util.Config;
-import android.util.Log;
-
-import org.xml.sax.Attributes;
-import org.xml.sax.helpers.DefaultHandler;
-import org.w3c.dom.smil.SMILDocument;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
+import org.w3c.dom.smil.SMILDocument;
+import org.xml.sax.Attributes;
+import org.xml.sax.helpers.DefaultHandler;
+
+import android.util.Log;
 
 import com.android.mms.dom.smil.SmilDocumentImpl;
 
 public class SmilContentHandler extends DefaultHandler {
     private static final String TAG = "SmilContentHandler";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
     private SMILDocument mSmilDocument;
     private Node mCurrentNode;

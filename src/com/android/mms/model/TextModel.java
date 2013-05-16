@@ -17,10 +17,7 @@
 
 package com.android.mms.model;
 
-import com.android.mms.dom.smil.SmilMediaElementImpl;
-import android.drm.mobile1.DrmException;
-import com.android.mms.drm.DrmWrapper;
-import com.google.android.mms.pdu.CharacterSets;
+import java.io.UnsupportedEncodingException;
 
 import org.w3c.dom.events.Event;
 import org.w3c.dom.smil.ElementTime;
@@ -28,8 +25,8 @@ import org.w3c.dom.smil.ElementTime;
 import android.content.Context;
 import android.util.Log;
 
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import com.android.mms.dom.smil.SmilMediaElementImpl;
+import com.google.android.mms.pdu.CharacterSets;
 
 public class TextModel extends RegionMediaModel {
     private static final String TAG = "Mms/text";
@@ -72,27 +69,9 @@ public class TextModel extends RegionMediaModel {
         return "";
     }
 
-    public TextModel(Context context, String contentType, String src, int charset,
-            DrmWrapper wrapper, RegionModel regionModel) throws IOException {
-        super(context, SmilHelper.ELEMENT_TAG_TEXT, contentType, src, wrapper, regionModel);
-
-        if (charset == CharacterSets.ANY_CHARSET) {
-            // By default, we use ISO_8859_1 to decode the data
-            // which character set wasn't set.
-            charset = CharacterSets.ISO_8859_1;
-        }
-        mCharset = charset;
-    }
-
     public String getText() {
         if (mText == null) {
-            try {
-                mText = extractTextFromData(getData());
-            } catch (DrmException e) {
-                Log.e(TAG, e.getMessage(), e);
-                // Display DRM error message in place.
-                mText = e.getMessage();
-            }
+            mText = extractTextFromData(getData());
         }
 
         // If our internal CharSequence is not already a String,

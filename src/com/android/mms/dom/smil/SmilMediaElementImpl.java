@@ -17,7 +17,6 @@
 
 package com.android.mms.dom.smil;
 
-import com.android.mms.dom.events.EventImpl;
 import org.w3c.dom.DOMException;
 import org.w3c.dom.events.DocumentEvent;
 import org.w3c.dom.events.Event;
@@ -25,8 +24,9 @@ import org.w3c.dom.smil.ElementTime;
 import org.w3c.dom.smil.SMILMediaElement;
 import org.w3c.dom.smil.TimeList;
 
-import android.util.Config;
 import android.util.Log;
+
+import com.android.mms.dom.events.EventImpl;
 
 public class SmilMediaElementImpl extends SmilElementImpl implements
         SMILMediaElement {
@@ -36,7 +36,7 @@ public class SmilMediaElementImpl extends SmilElementImpl implements
     public final static String SMIL_MEDIA_SEEK_EVENT = "SmilMediaSeek";
     private final static String TAG = "Mms:smil";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
     ElementTime mElementTime = new ElementTimeImpl(this) {
             private Event createEvent(String eventType) {

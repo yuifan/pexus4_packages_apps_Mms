@@ -17,6 +17,13 @@
 
 package com.android.mms.transaction;
 
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.net.SocketException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Locale;
+
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpRequest;
@@ -25,12 +32,9 @@ import org.apache.http.StatusLine;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.conn.params.ConnRouteParams;
+import org.apache.http.params.HttpConnectionParams;
 import org.apache.http.params.HttpParams;
 import org.apache.http.params.HttpProtocolParams;
-import org.apache.http.params.HttpConnectionParams;
-
-import com.android.mms.MmsConfig;
-import com.android.mms.LogTag;
 
 import android.content.Context;
 import android.net.http.AndroidHttpClient;
@@ -39,12 +43,8 @@ import android.text.TextUtils;
 import android.util.Config;
 import android.util.Log;
 
-import java.io.DataInputStream;
-import java.io.IOException;
-import java.net.SocketException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Locale;
+import com.android.mms.LogTag;
+import com.android.mms.MmsConfig;
 
 public class HttpUtils {
     private static final String TAG = LogTag.TRANSACTION;
@@ -55,6 +55,8 @@ public class HttpUtils {
     public static final int HTTP_POST_METHOD = 1;
     public static final int HTTP_GET_METHOD = 2;
 
+    private static final int MMS_READ_BUFFER = 4096;
+
     // This is the value to use for the "Accept-Language" header.
     // Once it becomes possible for the user to change the locale
     // setting, this should no longer be static.  We should call
@@ -62,7 +64,7 @@ public class HttpUtils {
     private static final String HDR_VALUE_ACCEPT_LANGUAGE;
 
     static {
-        HDR_VALUE_ACCEPT_LANGUAGE = getHttpAcceptLanguage();
+        HDR_VALUE_ACCEPT_LANGUAGE = getCurrentAcceptLanguage(Locale.getDefault());
     }
 
     // Definition for necessary HTTP headers.
@@ -96,7 +98,7 @@ public class HttpUtils {
             throw new IllegalArgumentException("URL must not be null.");
         }
 
-        if (LOCAL_LOGV) {
+        if (Log.isLoggable(LogTag.TRANSACTION, Log.VERBOSE)) {
             Log.v(TAG, "httpConnection: params list");
             Log.v(TAG, "\ttoken\t\t= " + token);
             Log.v(TAG, "\turl\t\t= " + url);
@@ -220,6 +222,47 @@ public class HttpUtils {
                             }
                         }
                     }
+                    if (entity.isChunked()) {
+                        Log.v(TAG, "httpConnection: transfer encoding is chunked");
+                        int bytesTobeRead = MmsConfig.getMaxMessageSize();
+                        byte[] tempBody = new byte[bytesTobeRead];
+                        DataInputStream dis = new DataInputStream(entity.getContent());
+                        try {
+                            int bytesRead = 0;
+                            int offset = 0;
+                            boolean readError = false;
+                            do {
+                                try {
+                                    bytesRead = dis.read(tempBody, offset, bytesTobeRead);
+                                } catch (IOException e) {
+                                    readError = true;
+                                    Log.e(TAG, "httpConnection: error reading input stream"
+                                        + e.getMessage());
+                                    break;
+                                }
+                                if (bytesRead > 0) {
+                                    bytesTobeRead -= bytesRead;
+                                    offset += bytesRead;
+                                }
+                            } while (bytesRead >= 0 && bytesTobeRead > 0);
+                            if (bytesRead == -1 && offset > 0 && !readError) {
+                                // offset is same as total number of bytes read
+                                // bytesRead will be -1 if the data was read till the eof
+                                body = new byte[offset];
+                                System.arraycopy(tempBody, 0, body, 0, offset);
+                                Log.v(TAG, "httpConnection: Chunked response length ["
+                                    + Integer.toString(offset) + "]");
+                            } else {
+                                Log.e(TAG, "httpConnection: Response entity too large or empty");
+                            }
+                        } finally {
+                            try {
+                                dis.close();
+                            } catch (IOException e) {
+                                Log.e(TAG, "Error closing input stream: " + e.getMessage());
+                            }
+                        }
+                    }
                 } finally {
                     if (entity != null) {
                         entity.consumeContent();
@@ -272,33 +315,55 @@ public class HttpUtils {
         return client;
     }
 
+    private static final String ACCEPT_LANG_FOR_US_LOCALE = "en-US";
+
     /**
      * Return the Accept-Language header.  Use the current locale plus
      * US if we are in a different locale than US.
+     * This code copied from the browser's WebSettings.java
+     * @return Current AcceptLanguage String.
      */
-    private static String getHttpAcceptLanguage() {
-        Locale locale = Locale.getDefault();
-        StringBuilder builder = new StringBuilder();
+    public static String getCurrentAcceptLanguage(Locale locale) {
+        StringBuilder buffer = new StringBuilder();
+        addLocaleToHttpAcceptLanguage(buffer, locale);
 
-        addLocaleToHttpAcceptLanguage(builder, locale);
-        if (!locale.equals(Locale.US)) {
-            if (builder.length() > 0) {
-                builder.append(", ");
+        if (!Locale.US.equals(locale)) {
+            if (buffer.length() > 0) {
+                buffer.append(", ");
             }
-            addLocaleToHttpAcceptLanguage(builder, Locale.US);
+            buffer.append(ACCEPT_LANG_FOR_US_LOCALE);
         }
-        return builder.toString();
+
+        return buffer.toString();
     }
 
-    private static void addLocaleToHttpAcceptLanguage(
-            StringBuilder builder, Locale locale) {
-        String language = locale.getLanguage();
+    /**
+     * Convert obsolete language codes, including Hebrew/Indonesian/Yiddish,
+     * to new standard.
+     */
+    private static String convertObsoleteLanguageCodeToNew(String langCode) {
+        if (langCode == null) {
+            return null;
+        }
+        if ("iw".equals(langCode)) {
+            // Hebrew
+            return "he";
+        } else if ("in".equals(langCode)) {
+            // Indonesian
+            return "id";
+        } else if ("ji".equals(langCode)) {
+            // Yiddish
+            return "yi";
+        }
+        return langCode;
+    }
 
+    private static void addLocaleToHttpAcceptLanguage(StringBuilder builder,
+                                                      Locale locale) {
+        String language = convertObsoleteLanguageCodeToNew(locale.getLanguage());
         if (language != null) {
             builder.append(language);
-
             String country = locale.getCountry();
-
             if (country != null) {
                 builder.append("-");
                 builder.append(country);

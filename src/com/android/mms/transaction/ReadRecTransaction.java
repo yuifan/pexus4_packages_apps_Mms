@@ -17,20 +17,19 @@
 
 package com.android.mms.transaction;
 
-import com.google.android.mms.MmsException;
-import com.google.android.mms.pdu.PduComposer;
-import com.google.android.mms.pdu.PduPersister;
-import com.google.android.mms.pdu.ReadRecInd;
-import com.google.android.mms.pdu.EncodedStringValue;
-import com.android.mms.ui.MessageUtils;
+import java.io.IOException;
 
 import android.content.Context;
 import android.net.Uri;
 import android.provider.Telephony.Mms.Sent;
-import android.util.Config;
 import android.util.Log;
 
-import java.io.IOException;
+import com.android.mms.ui.MessageUtils;
+import com.google.android.mms.MmsException;
+import com.google.android.mms.pdu.EncodedStringValue;
+import com.google.android.mms.pdu.PduComposer;
+import com.google.android.mms.pdu.PduPersister;
+import com.google.android.mms.pdu.ReadRecInd;
 
 /**
  * The ReadRecTransaction is responsible for sending read report
@@ -43,11 +42,12 @@ import java.io.IOException;
  * <li>Notifies the TransactionService about succesful completion.
  * </ul>
  */
-public class ReadRecTransaction extends Transaction {
+public class ReadRecTransaction extends Transaction implements Runnable{
     private static final String TAG = "ReadRecTransaction";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
+    private Thread mThread;
     private final Uri mReadReportURI;
 
     public ReadRecTransaction(Context context,
@@ -68,6 +68,11 @@ public class ReadRecTransaction extends Transaction {
      */
     @Override
     public void process() {
+        mThread = new Thread(this, "ReadRecTransaction");
+        mThread.start();
+    }
+
+    public void run() {
         PduPersister persister = PduPersister.getPduPersister(mContext);
 
         try {

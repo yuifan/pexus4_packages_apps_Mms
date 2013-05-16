@@ -17,23 +17,23 @@
 
 package com.android.mms.model;
 
-import com.android.mms.ContentRestrictionException;
-import com.android.mms.dom.smil.SmilParElementImpl;
-import com.google.android.mms.ContentType;
-
-import org.w3c.dom.events.Event;
-import org.w3c.dom.events.EventListener;
-import org.w3c.dom.smil.ElementTime;
-
-import android.util.Config;
-import android.util.Log;
-import android.text.TextUtils;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.ListIterator;
+
+import org.w3c.dom.events.Event;
+import org.w3c.dom.events.EventListener;
+import org.w3c.dom.smil.ElementTime;
+
+import android.text.TextUtils;
+import android.util.Config;
+import android.util.Log;
+
+import com.android.mms.ContentRestrictionException;
+import com.android.mms.dom.smil.SmilParElementImpl;
+import com.google.android.mms.ContentType;
 
 public class SlideModel extends Model implements List<MediaModel>, EventListener {
     public static final String TAG = "Mms/slideshow";
@@ -115,7 +115,8 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
                 mImage = media;
                 mCanAddVideo = false;
             } else {
-                throw new IllegalStateException();
+                Log.w(TAG, "[SlideModel] content type " + media.getContentType() +
+                    " - can't add image in this state");
             }
         } else if (media.isAudio()) {
             if (mCanAddAudio) {
@@ -123,7 +124,8 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
                 mAudio = media;
                 mCanAddVideo = false;
             } else {
-                throw new IllegalStateException();
+                Log.w(TAG, "[SlideModel] content type " + media.getContentType() +
+                    " - can't add audio in this state");
             }
         } else if (media.isVideo()) {
             if (mCanAddVideo) {
@@ -132,7 +134,8 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
                 mCanAddImage = false;
                 mCanAddAudio = false;
             } else {
-                throw new IllegalStateException();
+                Log.w(TAG, "[SlideModel] content type " + media.getContentType() +
+                    " - can't add video in this state");
             }
         }
     }
@@ -151,7 +154,7 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
             increaseSlideSize(addSize);
             increaseMessageSize(addSize);
         } else {
-            removeSize = old.getMediaSize();
+            removeSize = old.getMediaResizable() ? 0 : old.getMediaSize();
             if (addSize > removeSize) {
                 if (null != mParent) {
                     mParent.checkMessageSize(addSize - removeSize);
@@ -230,6 +233,9 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
     public void decreaseSlideSize(int decreaseSize) {
         if (decreaseSize > 0) {
             mSlideSize -= decreaseSize;
+            if (mSlideSize < 0) {
+                mSlideSize = 0;
+            }
         }
     }
 
@@ -249,6 +255,9 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
         if ((decreaseSize > 0) && (null != mParent)) {
             int size = mParent.getCurrentMessageSize();
             size -= decreaseSize;
+            if (size < 0) {
+                size = 0;
+            }
             mParent.setCurrentMessageSize(size);
         }
     }
@@ -492,11 +501,15 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
     }
 
     public boolean removeAudio() {
-        return remove(mAudio);
+        boolean result = remove(mAudio);
+        resetDuration();
+        return result;
     }
 
     public boolean removeVideo() {
-        return remove(mVideo);
+        boolean result = remove(mVideo);
+        resetDuration();
+        return result;
     }
 
     public TextModel getText() {
@@ -513,6 +526,16 @@ public class SlideModel extends Model implements List<MediaModel>, EventListener
 
     public VideoModel getVideo() {
         return (VideoModel) mVideo;
+    }
+
+    public void resetDuration() {
+        // If we remove all the objects that have duration, reset the slide back to its
+        // default duration. If we don't do this, if the user replaces a 10 sec video with
+        // a 3 sec audio, the duration will remain at 10 sec (see the way updateDuration() below
+        // works).
+        if (!hasAudio() && !hasVideo()) {
+            mDuration = DEFAULT_SLIDE_DURATION;
+        }
     }
 
     public void updateDuration(int duration) {

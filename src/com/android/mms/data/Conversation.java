@@ -1,29 +1,43 @@
 package com.android.mms.data;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
 
+import android.app.Activity;
 import android.content.AsyncQueryHandler;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
+import android.os.AsyncTask;
+import android.provider.BaseColumns;
 import android.provider.Telephony.Mms;
 import android.provider.Telephony.MmsSms;
 import android.provider.Telephony.Sms;
-import android.provider.Telephony.Threads;
 import android.provider.Telephony.Sms.Conversations;
+import android.provider.Telephony.Threads;
+import android.provider.Telephony.ThreadsColumns;
+import android.telephony.PhoneNumberUtils;
 import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.mms.LogTag;
+import com.android.mms.MmsApp;
 import com.android.mms.R;
 import com.android.mms.transaction.MessagingNotification;
+import com.android.mms.transaction.MmsMessageSender;
+import com.android.mms.ui.ComposeMessageActivity;
 import com.android.mms.ui.MessageUtils;
+import com.android.mms.util.AddressUtils;
 import com.android.mms.util.DraftCache;
+
+import com.google.android.mms.pdu.PduHeaders;
 
 /**
  * An interface for finding information about conversations and/or creating new ones.
@@ -31,17 +45,18 @@ import com.android.mms.util.DraftCache;
 public class Conversation {
     private static final String TAG = "Mms/conv";
     private static final boolean DEBUG = false;
+    private static final boolean DELETEDEBUG = false;
 
-    private static final Uri sAllThreadsUri =
+    public static final Uri sAllThreadsUri =
         Threads.CONTENT_URI.buildUpon().appendQueryParameter("simple", "true").build();
 
-    private static final String[] ALL_THREADS_PROJECTION = {
+    public static final String[] ALL_THREADS_PROJECTION = {
         Threads._ID, Threads.DATE, Threads.MESSAGE_COUNT, Threads.RECIPIENT_IDS,
         Threads.SNIPPET, Threads.SNIPPET_CHARSET, Threads.READ, Threads.ERROR,
         Threads.HAS_ATTACHMENT
     };
 
-    private static final String[] UNREAD_PROJECTION = {
+    public static final String[] UNREAD_PROJECTION = {
         Threads._ID,
         Threads.READ
     };
@@ -77,11 +92,15 @@ public class Conversation {
     private boolean mHasUnreadMessages; // True if there are unread messages.
     private boolean mHasAttachment;     // True if any message has an attachment.
     private boolean mHasError;          // True if any message is in an error state.
+    private boolean mIsChecked;         // True if user has selected the conversation for a
+                                        // multi-operation such as delete.
 
-    private static ContentValues mReadContentValues;
-    private static boolean mLoadingThreads;
+    private static ContentValues sReadContentValues;
+    private static boolean sLoadingThreads;
+    private static boolean sDeletingThreads;
+    private static Object sDeletingThreadsLock = new Object();
     private boolean mMarkAsReadBlocked;
-    private Object mMarkAsBlockedSyncer = new Object();
+    private boolean mMarkAsReadWaiting;
 
     private Conversation(Context context) {
         mContext = context;
@@ -90,6 +109,9 @@ public class Conversation {
     }
 
     private Conversation(Context context, long threadId, boolean allowQuery) {
+        if (DEBUG) {
+            Log.v(TAG, "Conversation constructor threadId: " + threadId);
+        }
         mContext = context;
         if (!loadFromThreadId(threadId, allowQuery)) {
             mRecipients = new ContactList();
@@ -98,6 +120,9 @@ public class Conversation {
     }
 
     private Conversation(Context context, Cursor cursor, boolean allowQuery) {
+        if (DEBUG) {
+            Log.v(TAG, "Conversation constructor cursor, allowQuery: " + allowQuery);
+        }
         mContext = context;
         fillFromCursor(context, this, cursor, allowQuery);
     }
@@ -115,6 +140,9 @@ public class Conversation {
      * Find the conversation matching the provided thread ID.
      */
     public static Conversation get(Context context, long threadId, boolean allowQuery) {
+        if (DEBUG) {
+            Log.v(TAG, "Conversation get by threadId: " + threadId);
+        }
         Conversation conv = Cache.get(threadId);
         if (conv != null)
             return conv;
@@ -123,7 +151,10 @@ public class Conversation {
         try {
             Cache.put(conv);
         } catch (IllegalStateException e) {
-            LogTag.error("Tried to add duplicate Conversation to Cache");
+            LogTag.error("Tried to add duplicate Conversation to Cache (from threadId): " + conv);
+            if (!Cache.replace(conv)) {
+                LogTag.error("get by threadId cache.replace failed on " + conv);
+            }
         }
         return conv;
     }
@@ -133,6 +164,9 @@ public class Conversation {
      * When called with an empty recipient list, equivalent to {@link #createNew}.
      */
     public static Conversation get(Context context, ContactList recipients, boolean allowQuery) {
+        if (DEBUG) {
+            Log.v(TAG, "Conversation get by recipients: " + recipients.serialize());
+        }
         // If there are no recipients in the list, make a new conversation.
         if (recipients.size() < 1) {
             return createNew(context);
@@ -147,14 +181,17 @@ public class Conversation {
         Log.d(TAG, "Conversation.get: created new conversation " + /*conv.toString()*/ "xxxxxxx");
 
         if (!conv.getRecipients().equals(recipients)) {
-            Log.e(TAG, "Conversation.get: new conv's recipients don't match input recpients "
+            LogTag.error(TAG, "Conversation.get: new conv's recipients don't match input recpients "
                     + /*recipients*/ "xxxxxxx");
         }
 
         try {
             Cache.put(conv);
         } catch (IllegalStateException e) {
-            LogTag.error("Tried to add duplicate Conversation to Cache");
+            LogTag.error("Tried to add duplicate Conversation to Cache (from recipients): " + conv);
+            if (!Cache.replace(conv)) {
+                LogTag.error("get by recipients cache.replace failed on " + conv);
+            }
         }
 
         return conv;
@@ -167,6 +204,9 @@ public class Conversation {
      * When called with a null Uri, equivalent to {@link #createNew}.
      */
     public static Conversation get(Context context, Uri uri, boolean allowQuery) {
+        if (DEBUG) {
+            Log.v(TAG, "Conversation get by uri: " + uri);
+        }
         if (uri == null) {
             return createNew(context);
         }
@@ -186,8 +226,9 @@ public class Conversation {
             }
         }
 
-        String recipient = getRecipients(uri);
-        return get(context, ContactList.getByNumbers(recipient,
+        String recipients = PhoneNumberUtils.replaceUnicodeDigits(getRecipients(uri))
+                .replace(',', ';');
+        return get(context, ContactList.getByNumbers(recipients,
                 allowQuery /* don't block */, true /* replace number */), allowQuery);
     }
 
@@ -195,7 +236,7 @@ public class Conversation {
      * Returns true if the recipient in the uri matches the recipient list in this
      * conversation.
      */
-    public boolean sameRecipient(Uri uri) {
+    public boolean sameRecipient(Uri uri, Context context) {
         int size = mRecipients.size();
         if (size > 1) {
             return false;
@@ -203,12 +244,21 @@ public class Conversation {
         if (uri == null) {
             return size == 0;
         }
+        ContactList incomingRecipient = null;
         if (uri.getPathSegments().size() >= 2) {
-            return false;       // it's a thread id for a conversation
+            // it's a thread id for a conversation
+            Conversation otherConv = get(context, uri, false);
+            if (otherConv == null) {
+                return false;
+            }
+            incomingRecipient = otherConv.mRecipients;
+        } else {
+            String recipient = getRecipients(uri);
+            incomingRecipient = ContactList.getByNumbers(recipient,
+                    false /* don't block */, false /* don't replace number */);
         }
-        String recipient = getRecipients(uri);
-        ContactList incomingRecipient = ContactList.getByNumbers(recipient,
-                false /* don't block */, false /* don't replace number */);
+        if (DEBUG) Log.v(TAG, "sameRecipient incomingRecipient: " + incomingRecipient +
+                " mRecipients: " + mRecipients);
         return mRecipients.equals(incomingRecipient);
     }
 
@@ -235,88 +285,146 @@ public class Conversation {
         try {
             Cache.put(conv);
         } catch (IllegalStateException e) {
-            LogTag.error("Tried to add duplicate Conversation to Cache");
+            LogTag.error(TAG, "Tried to add duplicate Conversation to Cache (from cursor): " +
+                    conv);
+            if (!Cache.replace(conv)) {
+                LogTag.error("Converations.from cache.replace failed on " + conv);
+            }
         }
         return conv;
     }
 
     private void buildReadContentValues() {
-        if (mReadContentValues == null) {
-            mReadContentValues = new ContentValues(2);
-            mReadContentValues.put("read", 1);
-            mReadContentValues.put("seen", 1);
+        if (sReadContentValues == null) {
+            sReadContentValues = new ContentValues(2);
+            sReadContentValues.put("read", 1);
+            sReadContentValues.put("seen", 1);
         }
     }
+
+    private void sendReadReport(final Context context,
+            final long threadId,
+            final int status) {
+        String selection = Mms.MESSAGE_TYPE + " = " + PduHeaders.MESSAGE_TYPE_RETRIEVE_CONF
+            + " AND " + Mms.READ + " = 0"
+            + " AND " + Mms.READ_REPORT + " = " + PduHeaders.VALUE_YES;
+
+        if (threadId != -1) {
+            selection = selection + " AND " + Mms.THREAD_ID + " = " + threadId;
+        }
+
+        final Cursor c = SqliteWrapper.query(context, context.getContentResolver(),
+                        Mms.Inbox.CONTENT_URI, new String[] {Mms._ID, Mms.MESSAGE_ID},
+                        selection, null, null);
+
+        try {
+            if (c == null || c.getCount() == 0) {
+                return;
+            }
+
+            while (c.moveToNext()) {
+                Uri uri = ContentUris.withAppendedId(Mms.CONTENT_URI, c.getLong(0));
+                if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+                    LogTag.debug("sendReadReport: uri = " + uri);
+                }
+                MmsMessageSender.sendReadRec(context, AddressUtils.getFrom(context, uri),
+                                             c.getString(1), status);
+            }
+        } finally {
+            if (c != null) {
+                c.close();
+            }
+        }
+    }
+
 
     /**
      * Marks all messages in this conversation as read and updates
      * relevant notifications.  This method returns immediately;
-     * work is dispatched to a background thread.
+     * work is dispatched to a background thread. This function should
+     * always be called from the UI thread.
      */
     public void markAsRead() {
-        // If we have no Uri to mark (as in the case of a conversation that
-        // has not yet made its way to disk), there's nothing to do.
+        if (DELETEDEBUG) {
+            Contact.logWithTrace(TAG, "markAsRead mMarkAsReadWaiting: " + mMarkAsReadWaiting +
+                    " mMarkAsReadBlocked: " + mMarkAsReadBlocked);
+        }
+        if (mMarkAsReadWaiting) {
+            // We've already been asked to mark everything as read, but we're blocked.
+            return;
+        }
+        if (mMarkAsReadBlocked) {
+            // We're blocked so record the fact that we want to mark the messages as read
+            // when we get unblocked.
+            mMarkAsReadWaiting = true;
+            return;
+        }
         final Uri threadUri = getUri();
 
-        new Thread(new Runnable() {
-            public void run() {
-                synchronized(mMarkAsBlockedSyncer) {
-                    if (mMarkAsReadBlocked) {
-                        try {
-                            mMarkAsBlockedSyncer.wait();
-                        } catch (InterruptedException e) {
-                        }
-                    }
-
-                    if (threadUri != null) {
-                        buildReadContentValues();
-
-                        // Check the read flag first. It's much faster to do a query than
-                        // to do an update. Timing this function show it's about 10x faster to
-                        // do the query compared to the update, even when there's nothing to
-                        // update.
-                        boolean needUpdate = true;
-
-                        Cursor c = mContext.getContentResolver().query(threadUri,
-                                UNREAD_PROJECTION, UNREAD_SELECTION, null, null);
-                        if (c != null) {
-                            try {
-                                needUpdate = c.getCount() > 0;
-                            } finally {
-                                c.close();
-                            }
-                        }
-
-                        if (needUpdate) {
-                            LogTag.debug("markAsRead: update read/seen for thread uri: " +
-                                    threadUri);
-                            mContext.getContentResolver().update(threadUri, mReadContentValues,
-                                    UNREAD_SELECTION, null);
-                        }
-
-                        setHasUnreadMessages(false);
-                    }
+        new AsyncTask<Void, Void, Void>() {
+            protected Void doInBackground(Void... none) {
+                if (DELETEDEBUG || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+                    LogTag.debug("markAsRead.doInBackground");
                 }
+                // If we have no Uri to mark (as in the case of a conversation that
+                // has not yet made its way to disk), there's nothing to do.
+                if (threadUri != null) {
+                    buildReadContentValues();
 
-                // Always update notifications regardless of the read state.
-                MessagingNotification.blockingUpdateAllNotifications(mContext);
+                    // Check the read flag first. It's much faster to do a query than
+                    // to do an update. Timing this function show it's about 10x faster to
+                    // do the query compared to the update, even when there's nothing to
+                    // update.
+                    boolean needUpdate = true;
+
+                    Cursor c = mContext.getContentResolver().query(threadUri,
+                            UNREAD_PROJECTION, UNREAD_SELECTION, null, null);
+                    if (c != null) {
+                        try {
+                            needUpdate = c.getCount() > 0;
+                        } finally {
+                            c.close();
+                        }
+                    }
+
+                    if (needUpdate) {
+                        sendReadReport(mContext, mThreadId, PduHeaders.READ_STATUS_READ);
+                        LogTag.debug("markAsRead: update read/seen for thread uri: " +
+                                threadUri);
+                        mContext.getContentResolver().update(threadUri, sReadContentValues,
+                                UNREAD_SELECTION, null);
+                    }
+                    setHasUnreadMessages(false);
+                }
+                // Always update notifications regardless of the read state, which is usually
+                // canceling the notification of the thread that was just marked read.
+                MessagingNotification.blockingUpdateAllNotifications(mContext,
+                        MessagingNotification.THREAD_NONE);
+
+                return null;
             }
-        }).start();
+        }.execute();
     }
 
+    /**
+     * Call this with false to prevent marking messages as read. The code calls this so
+     * the DB queries in markAsRead don't slow down the main query for messages. Once we've
+     * queried for all the messages (see ComposeMessageActivity.onQueryComplete), then we
+     * can mark messages as read. Only call this function on the UI thread.
+     */
     public void blockMarkAsRead(boolean block) {
-        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+        if (DELETEDEBUG || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
             LogTag.debug("blockMarkAsRead: " + block);
         }
 
-        synchronized(mMarkAsBlockedSyncer) {
-            if (block != mMarkAsReadBlocked) {
-                mMarkAsReadBlocked = block;
-                if (!mMarkAsReadBlocked) {
-                    mMarkAsBlockedSyncer.notifyAll();
+        if (block != mMarkAsReadBlocked) {
+            mMarkAsReadBlocked = block;
+            if (!mMarkAsReadBlocked) {
+                if (mMarkAsReadWaiting) {
+                    mMarkAsReadWaiting = false;
+                    markAsRead();
                 }
             }
-
         }
     }
 
@@ -356,13 +464,13 @@ public class Conversation {
      * @return The thread ID of this conversation in the database
      */
     public synchronized long ensureThreadId() {
-        if (DEBUG) {
+        if (DEBUG || DELETEDEBUG) {
             LogTag.debug("ensureThreadId before: " + mThreadId);
         }
         if (mThreadId <= 0) {
             mThreadId = getOrCreateThreadId(mContext, mRecipients);
         }
-        if (DEBUG) {
+        if (DEBUG || DELETEDEBUG) {
             LogTag.debug("ensureThreadId after: " + mThreadId);
         }
 
@@ -386,10 +494,17 @@ public class Conversation {
      * database (e.g. storing a draft message to it).
      */
     public synchronized void setRecipients(ContactList list) {
+        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+            Log.d(TAG, "setRecipients before: " + this.toString());
+        }
         mRecipients = list;
 
         // Invalidate thread ID because the recipient set has changed.
         mThreadId = 0;
+
+        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+            Log.d(TAG, "setRecipients after: " + this.toString());
+        }
     }
 
     /**
@@ -434,6 +549,13 @@ public class Conversation {
     public synchronized int getMessageCount() {
         return mMessageCount;
     }
+    /**
+     * Set the number of messages in this conversation, excluding the draft
+     * (if it exists).
+     */
+    public synchronized void setMessageCount(int cnt) {
+        mMessageCount = cnt;
+    }
 
     /**
      * Returns a snippet of text from the most recent message in the conversation.
@@ -471,6 +593,17 @@ public class Conversation {
         return mHasError;
     }
 
+    /**
+     * Returns true if this conversation is selected for a multi-operation.
+     */
+    public synchronized boolean isChecked() {
+        return mIsChecked;
+    }
+
+    public synchronized void setIsChecked(boolean isChecked) {
+        mIsChecked = isChecked;
+    }
+
     private static long getOrCreateThreadId(Context context, ContactList list) {
         HashSet<String> recipients = new HashSet<String>();
         Contact cacheContact = null;
@@ -482,13 +615,63 @@ public class Conversation {
                 recipients.add(c.getNumber());
             }
         }
-        long retVal = Threads.getOrCreateThreadId(context, recipients);
-        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
-            LogTag.debug("[Conversation] getOrCreateThreadId for (%s) returned %d",
-                    recipients, retVal);
+        synchronized(sDeletingThreadsLock) {
+            if (DELETEDEBUG) {
+                ComposeMessageActivity.log("Conversation getOrCreateThreadId for: " +
+                        list.formatNamesAndNumbers(",") + " sDeletingThreads: " + sDeletingThreads);
+            }
+            long now = System.currentTimeMillis();
+            while (sDeletingThreads) {
+                try {
+                    sDeletingThreadsLock.wait(30000);
+                } catch (InterruptedException e) {
+                }
+                if (System.currentTimeMillis() - now > 29000) {
+                    // The deleting thread task is stuck or onDeleteComplete wasn't called.
+                    // Unjam ourselves.
+                    Log.e(TAG, "getOrCreateThreadId timed out waiting for delete to complete",
+                            new Exception());
+                    sDeletingThreads = false;
+                    break;
+                }
+            }
+            long retVal = Threads.getOrCreateThreadId(context, recipients);
+            if (DELETEDEBUG || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+                LogTag.debug("[Conversation] getOrCreateThreadId for (%s) returned %d",
+                        recipients, retVal);
+            }
+            return retVal;
         }
+    }
 
-        return retVal;
+    public static long getOrCreateThreadId(Context context, String address) {
+        synchronized(sDeletingThreadsLock) {
+            if (DELETEDEBUG) {
+                ComposeMessageActivity.log("Conversation getOrCreateThreadId for: " +
+                        address + " sDeletingThreads: " + sDeletingThreads);
+            }
+            long now = System.currentTimeMillis();
+            while (sDeletingThreads) {
+                try {
+                    sDeletingThreadsLock.wait(30000);
+                } catch (InterruptedException e) {
+                }
+                if (System.currentTimeMillis() - now > 29000) {
+                    // The deleting thread task is stuck or onDeleteComplete wasn't called.
+                    // Unjam ourselves.
+                    Log.e(TAG, "getOrCreateThreadId timed out waiting for delete to complete",
+                            new Exception());
+                    sDeletingThreads = false;
+                    break;
+                }
+            }
+            long retVal = Threads.getOrCreateThreadId(context, address);
+            if (DELETEDEBUG || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+                LogTag.debug("[Conversation] getOrCreateThreadId for (%s) returned %d",
+                        address, retVal);
+            }
+            return retVal;
+        }
     }
 
     /*
@@ -540,8 +723,28 @@ public class Conversation {
         // mmssms.db|2.253 ms|SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs,
         // read, error, has_attachment FROM threads ORDER BY  date DESC
 
+        startQuery(handler, token, null);
+    }
+
+    /**
+     * Start a query for in the database on the specified AsyncQueryHandler with the specified
+     * "where" clause.
+     *
+     * @param handler An AsyncQueryHandler that will receive onQueryComplete
+     *                upon completion of the query
+     * @param token   The token that will be passed to onQueryComplete
+     * @param selection   A where clause (can be null) to select particular conv items.
+     */
+    public static void startQuery(AsyncQueryHandler handler, int token, String selection) {
+        handler.cancelOperation(token);
+
+        // This query looks like this in the log:
+        // I/Database(  147): elapsedTime4Sql|/data/data/com.android.providers.telephony/databases/
+        // mmssms.db|2.253 ms|SELECT _id, date, message_count, recipient_ids, snippet, snippet_cs,
+        // read, error, has_attachment FROM threads ORDER BY  date DESC
+
         handler.startQuery(token, null, sAllThreadsUri,
-                ALL_THREADS_PROJECTION, null, null, Conversations.DEFAULT_SORT_ORDER);
+                ALL_THREADS_PROJECTION, selection, null, Conversations.DEFAULT_SORT_ORDER);
     }
 
     /**
@@ -551,13 +754,31 @@ public class Conversation {
      *                upon completion of the conversation being deleted
      * @param token   The token that will be passed to onDeleteComplete
      * @param deleteAll Delete the whole thread including locked messages
-     * @param threadId Thread ID of the conversation to be deleted
+     * @param threadIds Collection of thread IDs of the conversations to be deleted
      */
-    public static void startDelete(AsyncQueryHandler handler, int token, boolean deleteAll,
-            long threadId) {
-        Uri uri = ContentUris.withAppendedId(Threads.CONTENT_URI, threadId);
-        String selection = deleteAll ? null : "locked=0";
-        handler.startDelete(token, null, uri, selection, null);
+    public static void startDelete(ConversationQueryHandler handler, int token, boolean deleteAll,
+            Collection<Long> threadIds) {
+        synchronized(sDeletingThreadsLock) {
+            if (DELETEDEBUG) {
+                Log.v(TAG, "Conversation startDelete sDeletingThreads: " +
+                        sDeletingThreads);
+            }
+            if (sDeletingThreads) {
+                Log.e(TAG, "startDeleteAll already in the middle of a delete", new Exception());
+            }
+            MmsApp.getApplication().getPduLoaderManager().clear();
+            sDeletingThreads = true;
+
+            for (long threadId : threadIds) {
+                Uri uri = ContentUris.withAppendedId(Threads.CONTENT_URI, threadId);
+                String selection = deleteAll ? null : "locked=0";
+
+                handler.setDeleteToken(token);
+                handler.startDelete(token, new Long(threadId), uri, selection, null);
+
+                DraftCache.getInstance().setDraftState(threadId, false);
+            }
+        }
     }
 
     /**
@@ -567,9 +788,94 @@ public class Conversation {
      * @param token   The token that will be passed to onDeleteComplete
      * @param deleteAll Delete the whole thread including locked messages
      */
-    public static void startDeleteAll(AsyncQueryHandler handler, int token, boolean deleteAll) {
-        String selection = deleteAll ? null : "locked=0";
-        handler.startDelete(token, null, Threads.CONTENT_URI, selection, null);
+    public static void startDeleteAll(ConversationQueryHandler handler, int token,
+            boolean deleteAll) {
+        synchronized(sDeletingThreadsLock) {
+            if (DELETEDEBUG) {
+                Log.v(TAG, "Conversation startDeleteAll sDeletingThreads: " +
+                                sDeletingThreads);
+            }
+            if (sDeletingThreads) {
+                Log.e(TAG, "startDeleteAll already in the middle of a delete", new Exception());
+            }
+            sDeletingThreads = true;
+            String selection = deleteAll ? null : "locked=0";
+
+            MmsApp app = MmsApp.getApplication();
+            app.getPduLoaderManager().clear();
+            app.getThumbnailManager().clear();
+
+            handler.setDeleteToken(token);
+            handler.startDelete(token, new Long(-1), Threads.CONTENT_URI, selection, null);
+        }
+    }
+
+    public static class ConversationQueryHandler extends AsyncQueryHandler {
+        private int mDeleteToken;
+
+        public ConversationQueryHandler(ContentResolver cr) {
+            super(cr);
+        }
+
+        public void setDeleteToken(int token) {
+            mDeleteToken = token;
+        }
+
+        /**
+         * Always call this super method from your overridden onDeleteComplete function.
+         */
+        @Override
+        protected void onDeleteComplete(int token, Object cookie, int result) {
+            if (token == mDeleteToken) {
+                // Test code
+//                try {
+//                    Thread.sleep(10000);
+//                } catch (InterruptedException e) {
+//                }
+
+                // release lock
+                synchronized(sDeletingThreadsLock) {
+                    sDeletingThreads = false;
+                    if (DELETEDEBUG) {
+                        Log.v(TAG, "Conversation onDeleteComplete sDeletingThreads: " +
+                                        sDeletingThreads);
+                    }
+                    sDeletingThreadsLock.notifyAll();
+                }
+            }
+        }
+    }
+
+    /**
+     * Check for locked messages in all threads or a specified thread.
+     * @param handler An AsyncQueryHandler that will receive onQueryComplete
+     *                upon completion of looking for locked messages
+     * @param threadIds   A list of threads to search. null means all threads
+     * @param token   The token that will be passed to onQueryComplete
+     */
+    public static void startQueryHaveLockedMessages(AsyncQueryHandler handler,
+            Collection<Long> threadIds,
+            int token) {
+        handler.cancelOperation(token);
+        Uri uri = MmsSms.CONTENT_LOCKED_URI;
+
+        String selection = null;
+        if (threadIds != null) {
+            StringBuilder buf = new StringBuilder();
+            int i = 0;
+
+            for (long threadId : threadIds) {
+                if (i++ > 0) {
+                    buf.append(" OR ");
+                }
+                // We have to build the selection arg into the selection because deep down in
+                // provider, the function buildUnionSubQuery takes selectionArgs, but ignores it.
+                buf.append(Mms.THREAD_ID).append("=").append(Long.toString(threadId));
+            }
+            selection = buf.toString();
+        }
+        handler.startQuery(token, threadIds, uri,
+                ALL_THREADS_PROJECTION, selection, null, Conversations.DEFAULT_SORT_ORDER);
     }
 
     /**
@@ -579,15 +885,15 @@ public class Conversation {
      * @param threadId   The threadId of the thread to search. -1 means all threads
      * @param token   The token that will be passed to onQueryComplete
      */
-    public static void startQueryHaveLockedMessages(AsyncQueryHandler handler, long threadId,
+    public static void startQueryHaveLockedMessages(AsyncQueryHandler handler,
+            long threadId,
             int token) {
-        handler.cancelOperation(token);
-        Uri uri = MmsSms.CONTENT_LOCKED_URI;
+        ArrayList<Long> threadIds = null;
         if (threadId != -1) {
-            uri = ContentUris.withAppendedId(uri, threadId);
+            threadIds = new ArrayList<Long>();
+            threadIds.add(threadId);
         }
-        handler.startQuery(token, new Long(threadId), uri,
-                ALL_THREADS_PROJECTION, null, null, Conversations.DEFAULT_SORT_ORDER);
+        startQueryHaveLockedMessages(handler, threadIds, token);
     }
 
     /**
@@ -604,7 +910,8 @@ public class Conversation {
             conv.mMessageCount = c.getInt(MESSAGE_COUNT);
 
             // Replace the snippet with a default value if it's empty.
-            String snippet = MessageUtils.extractEncStrFromCursor(c, SNIPPET, SNIPPET_CS);
+            String snippet = MessageUtils.cleanseMmsSubject(context,
+                    MessageUtils.extractEncStrFromCursor(c, SNIPPET, SNIPPET_CS));
             if (TextUtils.isEmpty(snippet)) {
                 snippet = context.getString(R.string.no_subject_view);
             }
@@ -623,7 +930,7 @@ public class Conversation {
         }
 
         if (Log.isLoggable(LogTag.THREAD_CACHE, Log.VERBOSE)) {
-            LogTag.debug("fillFromCursor: conv=" + conv + ", recipientIds=" + recipientIds);
+            Log.d(TAG, "fillFromCursor: conv=" + conv + ", recipientIds=" + recipientIds);
         }
     }
 
@@ -688,10 +995,13 @@ public class Conversation {
                 // We update cache entries in place so people with long-
                 // held references get updated.
                 if (Log.isLoggable(LogTag.THREAD_CACHE, Log.VERBOSE)) {
-                    LogTag.debug("Conversation.Cache.put: conv= " + c + ", hash: " + c.hashCode());
+                    Log.d(TAG, "Conversation.Cache.put: conv= " + c + ", hash: " + c.hashCode());
                 }
 
                 if (sInstance.mCache.contains(c)) {
+                    if (DEBUG) {
+                        dumpCache();
+                    }
                     throw new IllegalStateException("cache already contains " + c +
                             " threadId: " + c.mThreadId);
                 }
@@ -699,15 +1009,49 @@ public class Conversation {
             }
         }
 
-        static void remove(long threadId) {
-            if (DEBUG) {
-                LogTag.debug("remove threadid: " + threadId);
-                dumpCache();
+        /**
+         * Replace the specified conversation in the cache. This is used in cases where we
+         * lookup a conversation in the cache by threadId, but don't find it. The caller
+         * then builds a new conversation (from the cursor) and tries to add it, but gets
+         * an exception that the conversation is already in the cache, because the hash
+         * is based on the recipients and it's there under a stale threadId. In this function
+         * we remove the stale entry and add the new one. Returns true if the operation is
+         * successful
+         */
+        static boolean replace(Conversation c) {
+            synchronized (sInstance) {
+                if (Log.isLoggable(LogTag.THREAD_CACHE, Log.VERBOSE)) {
+                    LogTag.debug("Conversation.Cache.put: conv= " + c + ", hash: " + c.hashCode());
+                }
+
+                if (!sInstance.mCache.contains(c)) {
+                    if (DEBUG) {
+                        dumpCache();
+                    }
+                    return false;
+                }
+                // Here it looks like we're simply removing and then re-adding the same object
+                // to the hashset. Because the hashkey is the conversation's recipients, and not
+                // the thread id, we'll actually remove the object with the stale threadId and
+                // then add the the conversation with updated threadId, both having the same
+                // recipients.
+                sInstance.mCache.remove(c);
+                sInstance.mCache.add(c);
+                return true;
             }
-            for (Conversation c : sInstance.mCache) {
-                if (c.getThreadId() == threadId) {
-                    sInstance.mCache.remove(c);
-                    return;
+        }
+
+        static void remove(long threadId) {
+            synchronized (sInstance) {
+                if (DEBUG) {
+                    LogTag.debug("remove threadid: " + threadId);
+                    dumpCache();
+                }
+                for (Conversation c : sInstance.mCache) {
+                    if (c.getThreadId() == threadId) {
+                        sInstance.mCache.remove(c);
+                        return;
+                    }
                 }
             }
         }
@@ -747,27 +1091,37 @@ public class Conversation {
      * startup time.
      */
     public static void init(final Context context) {
-        new Thread(new Runnable() {
-            public void run() {
-                cacheAllThreads(context);
-            }
-        }).start();
+        Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    cacheAllThreads(context);
+                }
+            }, "Conversation.init");
+        thread.setPriority(Thread.MIN_PRIORITY);
+        thread.start();
     }
 
     public static void markAllConversationsAsSeen(final Context context) {
-        if (DEBUG) {
-            LogTag.debug("Conversation.markAllConversationsAsSeen");
+        if (DELETEDEBUG || DEBUG) {
+            Contact.logWithTrace(TAG, "Conversation.markAllConversationsAsSeen");
         }
 
-        new Thread(new Runnable() {
+        Thread thread = new Thread(new Runnable() {
+            @Override
             public void run() {
+                if (DELETEDEBUG) {
+                    Log.d(TAG, "Conversation.markAllConversationsAsSeen.run");
+                }
                 blockingMarkAllSmsMessagesAsSeen(context);
                 blockingMarkAllMmsMessagesAsSeen(context);
 
                 // Always update notifications regardless of the read state.
-                MessagingNotification.blockingUpdateAllNotifications(context);
+                MessagingNotification.blockingUpdateAllNotifications(context,
+                        MessagingNotification.THREAD_NONE);
             }
-        }).start();
+        }, "Conversation.markAllConversationsAsSeen");
+        thread.setPriority(Thread.MIN_PRIORITY);
+        thread.start();
     }
 
     private static void blockingMarkAllSmsMessagesAsSeen(final Context context) {
@@ -792,7 +1146,7 @@ public class Conversation {
             return;
         }
 
-        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+        if (DELETEDEBUG || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
             Log.d(TAG, "mark " + count + " SMS msgs as seen");
         }
 
@@ -827,7 +1181,7 @@ public class Conversation {
             return;
         }
 
-        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+        if (DELETEDEBUG || Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
             Log.d(TAG, "mark " + count + " MMS msgs as seen");
         }
 
@@ -846,7 +1200,7 @@ public class Conversation {
      */
     public static boolean loadingThreads() {
         synchronized (Cache.getInstance()) {
-            return mLoadingThreads;
+            return sLoadingThreads;
         }
     }
 
@@ -855,10 +1209,10 @@ public class Conversation {
             LogTag.debug("[Conversation] cacheAllThreads: begin");
         }
         synchronized (Cache.getInstance()) {
-            if (mLoadingThreads) {
+            if (sLoadingThreads) {
                 return;
                 }
-            mLoadingThreads = true;
+            sLoadingThreads = true;
         }
 
         // Keep track of what threads are now on disk so we
@@ -889,7 +1243,11 @@ public class Conversation {
                                 Cache.put(conv);
                             }
                         } catch (IllegalStateException e) {
-                            LogTag.error("Tried to add duplicate Conversation to Cache");
+                            LogTag.error("Tried to add duplicate Conversation to Cache" +
+                                    " for threadId: " + threadId + " new conv: " + conv);
+                            if (!Cache.replace(conv)) {
+                                LogTag.error("cacheAllThreads cache.replace failed on " + conv);
+                            }
                         }
                     } else {
                         // Or update in place so people with references
@@ -903,7 +1261,7 @@ public class Conversation {
                 c.close();
             }
             synchronized (Cache.getInstance()) {
-                mLoadingThreads = false;
+                sLoadingThreads = false;
             }
         }
 
@@ -937,9 +1295,169 @@ public class Conversation {
         return true;
     }
 
-    private static String getRecipients(Uri uri) {
+    public static String getRecipients(Uri uri) {
         String base = uri.getSchemeSpecificPart();
         int pos = base.indexOf('?');
         return (pos == -1) ? base : base.substring(0, pos);
+    }
+
+    public static void dump() {
+        Cache.dumpCache();
+    }
+
+    public static void dumpThreadsTable(Context context) {
+        LogTag.debug("**** Dump of threads table ****");
+        Cursor c = context.getContentResolver().query(sAllThreadsUri,
+                ALL_THREADS_PROJECTION, null, null, "date ASC");
+        try {
+            c.moveToPosition(-1);
+            while (c.moveToNext()) {
+                String snippet = MessageUtils.extractEncStrFromCursor(c, SNIPPET, SNIPPET_CS);
+                Log.d(TAG, "dumpThreadsTable threadId: " + c.getLong(ID) +
+                        " " + ThreadsColumns.DATE + " : " + c.getLong(DATE) +
+                        " " + ThreadsColumns.MESSAGE_COUNT + " : " + c.getInt(MESSAGE_COUNT) +
+                        " " + ThreadsColumns.SNIPPET + " : " + snippet +
+                        " " + ThreadsColumns.READ + " : " + c.getInt(READ) +
+                        " " + ThreadsColumns.ERROR + " : " + c.getInt(ERROR) +
+                        " " + ThreadsColumns.HAS_ATTACHMENT + " : " + c.getInt(HAS_ATTACHMENT) +
+                        " " + ThreadsColumns.RECIPIENT_IDS + " : " + c.getString(RECIPIENT_IDS));
+
+                ContactList recipients = ContactList.getByIds(c.getString(RECIPIENT_IDS), false);
+                Log.d(TAG, "----recipients: " + recipients.serialize());
+            }
+        } finally {
+            c.close();
+        }
+    }
+
+    static final String[] SMS_PROJECTION = new String[] {
+        BaseColumns._ID,
+        // For SMS
+        Sms.THREAD_ID,
+        Sms.ADDRESS,
+        Sms.BODY,
+        Sms.DATE,
+        Sms.READ,
+        Sms.TYPE,
+        Sms.STATUS,
+        Sms.LOCKED,
+        Sms.ERROR_CODE,
+    };
+
+    // The indexes of the default columns which must be consistent
+    // with above PROJECTION.
+    static final int COLUMN_ID                  = 0;
+    static final int COLUMN_THREAD_ID           = 1;
+    static final int COLUMN_SMS_ADDRESS         = 2;
+    static final int COLUMN_SMS_BODY            = 3;
+    static final int COLUMN_SMS_DATE            = 4;
+    static final int COLUMN_SMS_READ            = 5;
+    static final int COLUMN_SMS_TYPE            = 6;
+    static final int COLUMN_SMS_STATUS          = 7;
+    static final int COLUMN_SMS_LOCKED          = 8;
+    static final int COLUMN_SMS_ERROR_CODE      = 9;
+
+    public static void dumpSmsTable(Context context) {
+        LogTag.debug("**** Dump of sms table ****");
+        Cursor c = context.getContentResolver().query(Sms.CONTENT_URI,
+                SMS_PROJECTION, null, null, "_id DESC");
+        try {
+            // Only dump the latest 20 messages
+            c.moveToPosition(-1);
+            while (c.moveToNext() && c.getPosition() < 20) {
+                String body = c.getString(COLUMN_SMS_BODY);
+                LogTag.debug("dumpSmsTable " + BaseColumns._ID + ": " + c.getLong(COLUMN_ID) +
+                        " " + Sms.THREAD_ID + " : " + c.getLong(DATE) +
+                        " " + Sms.ADDRESS + " : " + c.getString(COLUMN_SMS_ADDRESS) +
+                        " " + Sms.BODY + " : " + body.substring(0, Math.min(body.length(), 8)) +
+                        " " + Sms.DATE + " : " + c.getLong(COLUMN_SMS_DATE) +
+                        " " + Sms.TYPE + " : " + c.getInt(COLUMN_SMS_TYPE));
+            }
+        } finally {
+            c.close();
+        }
+    }
+
+    /**
+     * verifySingleRecipient takes a threadId and a string recipient [phone number or email
+     * address]. It uses that threadId to lookup the row in the threads table and grab the
+     * recipient ids column. The recipient ids column contains a space-separated list of
+     * recipient ids. These ids are keys in the canonical_addresses table. The recipient is
+     * compared against what's stored in the mmssms.db, but only if the recipient id list has
+     * a single address.
+     * @param context is used for getting a ContentResolver
+     * @param threadId of the thread we're sending to
+     * @param recipientStr is a phone number or email address
+     * @return the verified number or email of the recipient
+     */
+    public static String verifySingleRecipient(final Context context,
+            final long threadId, final String recipientStr) {
+        if (threadId <= 0) {
+            LogTag.error("verifySingleRecipient threadId is ZERO, recipient: " + recipientStr);
+            LogTag.dumpInternalTables(context);
+            return recipientStr;
+        }
+        Cursor c = context.getContentResolver().query(sAllThreadsUri, ALL_THREADS_PROJECTION,
+                "_id=" + Long.toString(threadId), null, null);
+        if (c == null) {
+            LogTag.error("verifySingleRecipient threadId: " + threadId +
+                    " resulted in NULL cursor , recipient: " + recipientStr);
+            LogTag.dumpInternalTables(context);
+            return recipientStr;
+        }
+        String address = recipientStr;
+        String recipientIds;
+        try {
+            if (!c.moveToFirst()) {
+                LogTag.error("verifySingleRecipient threadId: " + threadId +
+                        " can't moveToFirst , recipient: " + recipientStr);
+                LogTag.dumpInternalTables(context);
+                return recipientStr;
+            }
+            recipientIds = c.getString(RECIPIENT_IDS);
+        } finally {
+            c.close();
+        }
+        String[] ids = recipientIds.split(" ");
+
+        if (ids.length != 1) {
+            // We're only verifying the situation where we have a single recipient input against
+            // a thread with a single recipient. If the thread has multiple recipients, just
+            // assume the input number is correct and return it.
+            return recipientStr;
+        }
+
+        // Get the actual number from the canonical_addresses table for this recipientId
+        address = RecipientIdCache.getSingleAddressFromCanonicalAddressInDb(context, ids[0]);
+
+        if (TextUtils.isEmpty(address)) {
+            LogTag.error("verifySingleRecipient threadId: " + threadId +
+                    " getSingleNumberFromCanonicalAddresses returned empty number for: " +
+                    ids[0] + " recipientIds: " + recipientIds);
+            LogTag.dumpInternalTables(context);
+            return recipientStr;
+        }
+        if (PhoneNumberUtils.compareLoosely(recipientStr, address)) {
+            // Bingo, we've got a match. We're returning the input number because of area
+            // codes. We could have a number in the canonical_address name of "232-1012" and
+            // assume the user's phone's area code is 650. If the user sends a message to
+            // "(415) 232-1012", it will loosely match "232-1202". If we returned the value
+            // from the table (232-1012), the message would go to the wrong person (to the
+            // person in the 650 area code rather than in the 415 area code).
+            return recipientStr;
+        }
+
+        if (context instanceof Activity) {
+            LogTag.warnPossibleRecipientMismatch("verifySingleRecipient for threadId: " +
+                    threadId + " original recipient: " + recipientStr +
+                    " recipient from DB: " + address, (Activity)context);
+        }
+        LogTag.dumpInternalTables(context);
+        if (Log.isLoggable(LogTag.THREAD_CACHE, Log.VERBOSE)) {
+            LogTag.debug("verifySingleRecipient for threadId: " +
+                    threadId + " original recipient: " + recipientStr +
+                    " recipient from DB: " + address);
+        }
+        return address;
     }
 }

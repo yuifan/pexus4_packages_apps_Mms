@@ -17,7 +17,7 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
+import java.util.Map;
 
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -29,7 +29,7 @@ import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
-import java.util.Map;
+import com.android.mms.R;
 
 /**
  * This class provides an embedded editor/viewer of picture attachment.
@@ -101,6 +101,9 @@ public class ImageAttachmentView extends LinearLayout implements SlideViewInterf
     public void setVideo(String name, Uri video) {
         // TODO Auto-generated method stub
 
+    }
+
+    public void setVideoThumbnail(String name, Bitmap bitmap) {
     }
 
     public void setVideoVisibility(boolean visible) {

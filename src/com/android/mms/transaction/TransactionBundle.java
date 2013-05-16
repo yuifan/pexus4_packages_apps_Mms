@@ -19,6 +19,8 @@ package com.android.mms.transaction;
 
 import android.os.Bundle;
 
+import com.android.internal.telephony.uicc.IccUtils;
+
 /**
  * A wrapper around the Bundle instances used to start the TransactionService.
  * It provides high-level APIs to set the information required for the latter to
@@ -142,5 +144,15 @@ public class TransactionBundle {
 
     public int getProxyPort() {
         return mBundle.getInt(PROXY_PORT);
+    }
+
+    @Override
+    public String toString() {
+        return "transactionType: " + getTransactionType() +
+            " uri: " + getUri() +
+            " pushData: " + IccUtils.bytesToHexString(getPushData()) +
+            " mmscUrl: " + getMmscUrl() +
+            " proxyAddress: " + getProxyAddress() +
+            " proxyPort: " + getProxyPort();
     }
 }

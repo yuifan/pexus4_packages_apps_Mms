@@ -17,33 +17,30 @@
 
 package com.android.mms.model;
 
-import com.android.mms.ContentRestrictionException;
-import com.android.mms.dom.events.EventImpl;
-import com.android.mms.dom.smil.SmilMediaElementImpl;
-import com.android.mms.drm.DrmWrapper;
-import com.google.android.mms.MmsException;
-import android.database.sqlite.SqliteWrapper;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.w3c.dom.events.Event;
 
 import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.provider.MediaStore.Audio;
 import android.provider.Telephony.Mms.Part;
 import android.text.TextUtils;
-import android.util.Config;
 import android.util.Log;
 
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import com.android.mms.ContentRestrictionException;
+import com.android.mms.dom.events.EventImpl;
+import com.android.mms.dom.smil.SmilMediaElementImpl;
+import com.google.android.mms.MmsException;
 
 public class AudioModel extends MediaModel {
     private static final String TAG = MediaModel.TAG;
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
     private final HashMap<String, String> mExtras;
 
@@ -55,12 +52,6 @@ public class AudioModel extends MediaModel {
 
     public AudioModel(Context context, String contentType, String src, Uri uri) throws MmsException {
         super(context, SmilHelper.ELEMENT_TAG_AUDIO, contentType, src, uri);
-        mExtras = new HashMap<String, String>();
-    }
-
-    public AudioModel(Context context, String contentType, String src,
-            DrmWrapper wrapper) throws IOException {
-        super(context, SmilHelper.ELEMENT_TAG_AUDIO, contentType, src, wrapper);
         mExtras = new HashMap<String, String>();
     }
 

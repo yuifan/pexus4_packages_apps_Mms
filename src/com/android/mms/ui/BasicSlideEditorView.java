@@ -17,12 +17,11 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
+import java.util.Map;
 
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.media.MediaPlayer;
 import android.net.Uri;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -34,8 +33,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import java.io.IOException;
-import java.util.Map;
+import com.android.mms.R;
 
 /**
  * This is a basic view to show and edit a slide.
@@ -141,6 +139,10 @@ public class BasicSlideEditorView extends LinearLayout implements
         } catch (java.lang.OutOfMemoryError e) {
             Log.e(TAG, "setVideo: out of memory: ", e);
         }
+    }
+
+    public void setVideoThumbnail(String name, Bitmap bitmap) {
+        mImageView.setImageBitmap(bitmap);
     }
 
     public void setVideoVisibility(boolean visible) {

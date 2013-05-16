@@ -17,10 +17,6 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
-import com.android.mms.LogTag;
-import com.android.mms.data.Conversation;
-
 import android.content.Context;
 import android.database.Cursor;
 import android.util.Log;
@@ -29,6 +25,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AbsListView;
 import android.widget.CursorAdapter;
+
+import com.android.mms.R;
+import com.android.mms.data.Conversation;
 
 /**
  * The back-end data adapter for ConversationList.
@@ -55,8 +54,7 @@ public class ConversationListAdapter extends CursorAdapter implements AbsListVie
 
         ConversationListItem headerView = (ConversationListItem) view;
         Conversation conv = Conversation.from(context, cursor);
-        ConversationListItemData ch = new ConversationListItemData(context, conv);
-        headerView.bind(context, ch);
+        headerView.bind(context, conv);
     }
 
     public void onMovedToScrapHeap(View view) {
@@ -84,6 +82,15 @@ public class ConversationListAdapter extends CursorAdapter implements AbsListVie
             if (mOnContentChangedListener != null) {
                 mOnContentChangedListener.onContentChanged(this);
             }
+        }
+    }
+
+    public void uncheckAll() {
+        int count = getCount();
+        for (int i = 0; i < count; i++) {
+            Cursor cursor = (Cursor)getItem(i);
+            Conversation conv = Conversation.from(mContext, cursor);
+            conv.setIsChecked(false);
         }
     }
 }

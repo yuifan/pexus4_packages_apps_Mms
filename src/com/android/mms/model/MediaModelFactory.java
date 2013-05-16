@@ -17,15 +17,7 @@
 
 package com.android.mms.model;
 
-import com.android.mms.UnsupportContentTypeException;
-import com.android.mms.LogTag;
-import com.android.mms.MmsConfig;
-import android.drm.mobile1.DrmException;
-import com.android.mms.drm.DrmWrapper;
-import com.google.android.mms.ContentType;
-import com.google.android.mms.MmsException;
-import com.google.android.mms.pdu.PduBody;
-import com.google.android.mms.pdu.PduPart;
+import java.io.IOException;
 
 import org.w3c.dom.smil.SMILMediaElement;
 import org.w3c.dom.smil.SMILRegionElement;
@@ -36,14 +28,19 @@ import org.w3c.dom.smil.TimeList;
 import android.content.Context;
 import android.util.Log;
 
-import java.io.IOException;
+import com.android.mms.LogTag;
+import com.android.mms.MmsConfig;
+import com.google.android.mms.ContentType;
+import com.google.android.mms.MmsException;
+import com.google.android.mms.pdu.PduBody;
+import com.google.android.mms.pdu.PduPart;
 
 public class MediaModelFactory {
     private static final String TAG = "Mms:media";
 
     public static MediaModel getMediaModel(Context context,
             SMILMediaElement sme, LayoutModel layouts, PduBody pb)
-            throws DrmException, IOException, IllegalArgumentException, MmsException {
+            throws IOException, IllegalArgumentException, MmsException {
         String tag = sme.getTagName();
         String src = sme.getSrc();
         PduPart part = findPart(pb, src);
@@ -92,7 +89,7 @@ public class MediaModelFactory {
 
     private static MediaModel getRegionMediaModel(Context context,
             String tag, String src, SMILRegionMediaElement srme,
-            LayoutModel layouts, PduPart part) throws DrmException, IOException, MmsException {
+            LayoutModel layouts, PduPart part) throws IOException, MmsException {
         SMILRegionElement sre = srme.getRegion();
         if (sre != null) {
             RegionModel region = layouts.findRegionById(sre.getId());
@@ -117,9 +114,16 @@ public class MediaModelFactory {
         throw new IllegalArgumentException("Region not found or bad region ID.");
     }
 
+    // When we encounter a content type we can't handle, such as "application/vnd.smaf", instead
+    // of throwing an exception and crashing, insert an empty TextModel in its place.
+    private static MediaModel createEmptyTextModel(Context context,  RegionModel regionModel)
+            throws IOException {
+        return new TextModel(context, ContentType.TEXT_PLAIN, null, regionModel);
+    }
+
     private static MediaModel getGenericMediaModel(Context context,
             String tag, String src, SMILMediaElement sme, PduPart part,
-            RegionModel regionModel) throws DrmException, IOException, MmsException {
+            RegionModel regionModel) throws IOException, MmsException {
         byte[] bytes = part.getContentType();
         if (bytes == null) {
             throw new IllegalArgumentException(
@@ -128,75 +132,38 @@ public class MediaModelFactory {
 
         String contentType = new String(bytes);
         MediaModel media = null;
-        if (ContentType.isDrmType(contentType)) {
-            DrmWrapper wrapper = new DrmWrapper(
-                    contentType, part.getDataUri(), part.getData());
-            if (tag.equals(SmilHelper.ELEMENT_TAG_TEXT)) {
-                media = new TextModel(context, contentType, src,
-                        part.getCharset(), wrapper, regionModel);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_IMAGE)) {
-                media = new ImageModel(context, contentType, src,
-                        wrapper, regionModel);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_VIDEO)) {
-                media = new VideoModel(context, contentType, src,
-                        wrapper, regionModel);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_AUDIO)) {
-                media = new AudioModel(context, contentType, src,
-                        wrapper);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_REF)) {
-                String drmContentType = wrapper.getContentType();
-                if (ContentType.isTextType(drmContentType)) {
-                    media = new TextModel(context, contentType, src,
-                            part.getCharset(), wrapper, regionModel);
-                } else if (ContentType.isImageType(drmContentType)) {
-                    media = new ImageModel(context, contentType, src,
-                            wrapper, regionModel);
-                } else if (ContentType.isVideoType(drmContentType)) {
-                    media = new VideoModel(context, contentType, src,
-                            wrapper, regionModel);
-                } else if (ContentType.isAudioType(drmContentType)) {
-                    media = new AudioModel(context, contentType, src,
-                            wrapper);
-                } else {
-                    throw new UnsupportContentTypeException(
-                        "Unsupported Content-Type: " + drmContentType);
-                }
-            } else {
-                throw new IllegalArgumentException("Unsupported TAG: " + tag);
-            }
-        } else {
-            if (tag.equals(SmilHelper.ELEMENT_TAG_TEXT)) {
+        if (tag.equals(SmilHelper.ELEMENT_TAG_TEXT)) {
+            media = new TextModel(context, contentType, src,
+                    part.getCharset(), part.getData(), regionModel);
+        } else if (tag.equals(SmilHelper.ELEMENT_TAG_IMAGE)) {
+            media = new ImageModel(context, contentType, src,
+                    part.getDataUri(), regionModel);
+        } else if (tag.equals(SmilHelper.ELEMENT_TAG_VIDEO)) {
+            media = new VideoModel(context, contentType, src,
+                    part.getDataUri(), regionModel);
+        } else if (tag.equals(SmilHelper.ELEMENT_TAG_AUDIO)) {
+            media = new AudioModel(context, contentType, src,
+                    part.getDataUri());
+        } else if (tag.equals(SmilHelper.ELEMENT_TAG_REF)) {
+            if (ContentType.isTextType(contentType)) {
                 media = new TextModel(context, contentType, src,
                         part.getCharset(), part.getData(), regionModel);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_IMAGE)) {
+            } else if (ContentType.isImageType(contentType)) {
                 media = new ImageModel(context, contentType, src,
                         part.getDataUri(), regionModel);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_VIDEO)) {
+            } else if (ContentType.isVideoType(contentType)) {
                 media = new VideoModel(context, contentType, src,
                         part.getDataUri(), regionModel);
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_AUDIO)) {
+            } else if (ContentType.isAudioType(contentType)) {
                 media = new AudioModel(context, contentType, src,
                         part.getDataUri());
-            } else if (tag.equals(SmilHelper.ELEMENT_TAG_REF)) {
-                if (ContentType.isTextType(contentType)) {
-                    media = new TextModel(context, contentType, src,
-                            part.getCharset(), part.getData(), regionModel);
-                } else if (ContentType.isImageType(contentType)) {
-                    media = new ImageModel(context, contentType, src,
-                            part.getDataUri(), regionModel);
-                } else if (ContentType.isVideoType(contentType)) {
-                    media = new VideoModel(context, contentType, src,
-                            part.getDataUri(), regionModel);
-                } else if (ContentType.isAudioType(contentType)) {
-                    media = new AudioModel(context, contentType, src,
-                            part.getDataUri());
-                } else {
-                    throw new UnsupportContentTypeException(
-                        "Unsupported Content-Type: " + contentType);
-                }
             } else {
-                throw new IllegalArgumentException("Unsupported TAG: " + tag);
+                Log.d(TAG, "[MediaModelFactory] getGenericMediaModel Unsupported Content-Type: "
+                        + contentType);
+                media = createEmptyTextModel(context, regionModel);
             }
+        } else {
+            throw new IllegalArgumentException("Unsupported TAG: " + tag);
         }
 
         // Set 'begin' property.

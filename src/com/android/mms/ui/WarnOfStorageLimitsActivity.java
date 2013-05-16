@@ -17,16 +17,15 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
-
-import com.android.internal.app.AlertController;
-
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
 import android.view.KeyEvent;
+
+import com.android.internal.app.AlertController;
+import com.android.mms.R;
 
 /**
  * This is the UI for telling the user about the storage limit setting.
@@ -63,7 +62,6 @@ public class WarnOfStorageLimitsActivity extends Activity implements DialogInter
 
         // Set up the "dialog"
         final AlertController.AlertParams p = mAlertParams;
-        p.mTitle = getString(R.string.storage_limits_title);
         p.mMessage = getString(R.string.storage_limits_message);
         p.mPositiveButtonText = getString(R.string.storage_limits_setting);
         p.mNegativeButtonText = getString(R.string.storage_limits_setting_dismiss);

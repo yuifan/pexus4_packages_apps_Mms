@@ -20,8 +20,7 @@ import java.util.HashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.android.mms.MmsApp;
-import com.android.mms.R;
+import android.app.ActionBar;
 import android.app.ListActivity;
 import android.app.SearchManager;
 import android.content.AsyncQueryHandler;
@@ -29,28 +28,26 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.SearchRecentSuggestions;
-
 import android.provider.Telephony;
 import android.text.SpannableString;
 import android.text.TextPaint;
-import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CursorAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import com.android.mms.MmsApp;
+import com.android.mms.R;
 import com.android.mms.data.Contact;
-import com.android.mms.data.Contact.UpdateListener;
-import com.android.mms.ui.ComposeMessageActivity;
 
 /***
  * Presents a List of search results.  Each item in the list represents a thread which
@@ -117,12 +114,13 @@ public class SearchActivity extends ListActivity
             float searchStringWidth = tp.measureText(mTargetString);
             float textFieldWidth = getWidth();
 
+            float ellipsisWidth = tp.measureText(sEllipsis);
+            textFieldWidth -= (2F * ellipsisWidth); // assume we'll need one on both ends
+
             String snippetString = null;
             if (searchStringWidth > textFieldWidth) {
                 snippetString = mFullText.substring(startPos, startPos + searchStringLength);
             } else {
-                float ellipsisWidth = tp.measureText(sEllipsis);
-                textFieldWidth -= (2F * ellipsisWidth); // assume we'll need one on both ends
 
                 int offset = -1;
                 int start = -1;
@@ -204,18 +202,70 @@ public class SearchActivity extends ListActivity
         Contact.removeListener(mContactListener);
     }
 
+    private long getThreadId(long sourceId, long which) {
+        Uri.Builder b = Uri.parse("content://mms-sms/messageIdToThread").buildUpon();
+        b = b.appendQueryParameter("row_id", String.valueOf(sourceId));
+        b = b.appendQueryParameter("table_to_use", String.valueOf(which));
+        String s = b.build().toString();
+
+        Cursor c = getContentResolver().query(
+                Uri.parse(s),
+                null,
+                null,
+                null,
+                null);
+        if (c != null) {
+            try {
+                if (c.moveToFirst()) {
+                    return c.getLong(c.getColumnIndex("thread_id"));
+                }
+            } finally {
+                c.close();
+            }
+        }
+        return -1;
+    }
+
     @Override
-    public void onCreate(Bundle icicle)
-    {
+    public void onCreate(Bundle icicle) {
         super.onCreate(icicle);
-        setContentView(R.layout.search_activity);
 
         String searchStringParameter = getIntent().getStringExtra(SearchManager.QUERY);
         if (searchStringParameter == null) {
             searchStringParameter = getIntent().getStringExtra("intent_extra_data_key" /*SearchManager.SUGGEST_COLUMN_INTENT_EXTRA_DATA*/);
         }
         final String searchString =
-        	searchStringParameter != null ? searchStringParameter.trim() : searchStringParameter;
+            searchStringParameter != null ? searchStringParameter.trim() : searchStringParameter;
+
+        // If we're being launched with a source_id then just go to that particular thread.
+        // Work around the fact that suggestions can only launch the search activity, not some
+        // arbitrary activity (such as ComposeMessageActivity).
+        final Uri u = getIntent().getData();
+        if (u != null && u.getQueryParameter("source_id") != null) {
+            Thread t = new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        long sourceId = Long.parseLong(u.getQueryParameter("source_id"));
+                        long whichTable = Long.parseLong(u.getQueryParameter("which_table"));
+                        long threadId = getThreadId(sourceId, whichTable);
+
+                        final Intent onClickIntent = new Intent(SearchActivity.this, ComposeMessageActivity.class);
+                        onClickIntent.putExtra("highlight", searchString);
+                        onClickIntent.putExtra("select_id", sourceId);
+                        onClickIntent.putExtra("thread_id", threadId);
+                        startActivity(onClickIntent);
+                        finish();
+                        return;
+                    } catch (NumberFormatException ex) {
+                        // ok, we do not have a thread id so continue
+                    }
+                }
+            }, "Search thread");
+            t.start();
+            return;
+        }
+
+        setContentView(R.layout.search_activity);
         ContentResolver cr = getContentResolver();
 
         searchStringParameter = searchStringParameter.trim();
@@ -236,6 +286,11 @@ public class SearchActivity extends ListActivity
         mQueryHandler = new AsyncQueryHandler(cr) {
             protected void onQueryComplete(int token, Object cookie, Cursor c) {
                 if (c == null) {
+                    setTitle(getResources().getQuantityString(
+                        R.plurals.search_results_title,
+                        0,
+                        0,
+                        searchString));
                     return;
                 }
                 final int threadIdPos = c.getColumnIndex("thread_id");
@@ -322,5 +377,19 @@ public class SearchActivity extends ListActivity
         // kick off a query for the threads which match the search string
         mQueryHandler.startQuery(0, null, uri, null, null, null, null);
 
+        ActionBar actionBar = getActionBar();
+        actionBar.setDisplayHomeAsUpEnabled(true);
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case android.R.id.home:
+                // The user clicked on the Messaging icon in the action bar. Take them back from
+                // wherever they came from
+                finish();
+                return true;
+        }
+        return false;
     }
 }

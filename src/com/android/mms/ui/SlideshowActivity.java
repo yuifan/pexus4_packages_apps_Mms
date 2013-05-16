@@ -17,16 +17,7 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
-import com.android.mms.dom.AttrImpl;
-import com.android.mms.dom.smil.SmilDocumentImpl;
-import com.android.mms.dom.smil.SmilPlayer;
-import com.android.mms.dom.smil.parser.SmilXmlSerializer;
-import com.android.mms.model.LayoutModel;
-import com.android.mms.model.RegionModel;
-import com.android.mms.model.SlideshowModel;
-import com.android.mms.model.SmilHelper;
-import com.google.android.mms.MmsException;
+import java.io.ByteArrayOutputStream;
 
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
@@ -43,17 +34,25 @@ import android.graphics.PixelFormat;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
-import android.util.Config;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.Window;
 import android.view.View.OnClickListener;
+import android.view.Window;
 import android.widget.MediaController;
 import android.widget.MediaController.MediaPlayerControl;
 
-import java.io.ByteArrayOutputStream;
+import com.android.mms.R;
+import com.android.mms.dom.AttrImpl;
+import com.android.mms.dom.smil.SmilDocumentImpl;
+import com.android.mms.dom.smil.SmilPlayer;
+import com.android.mms.dom.smil.parser.SmilXmlSerializer;
+import com.android.mms.model.LayoutModel;
+import com.android.mms.model.RegionModel;
+import com.android.mms.model.SlideshowModel;
+import com.android.mms.model.SmilHelper;
+import com.google.android.mms.MmsException;
 
 /**
  * Plays the given slideshow in full-screen mode with a common controller.
@@ -61,7 +60,7 @@ import java.io.ByteArrayOutputStream;
 public class SlideshowActivity extends Activity implements EventListener {
     private static final String TAG = "SlideshowActivity";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
     private MediaController mMediaController;
     private SmilPlayer mSmilPlayer;
@@ -71,6 +70,7 @@ public class SlideshowActivity extends Activity implements EventListener {
     private SMILDocument mSmilDoc;
 
     private SlideView mSlideView;
+    private int mSlideCount;
 
     /**
      * @return whether the Smil has MMS conformance layout.
@@ -165,6 +165,7 @@ public class SlideshowActivity extends Activity implements EventListener {
 
         try {
             model = SlideshowModel.createFromMessageUri(this, msg);
+            mSlideCount = model.size();
         } catch (MmsException e) {
             Log.e(TAG, "Cannot present the slide show.", e);
             finish();
@@ -183,8 +184,13 @@ public class SlideshowActivity extends Activity implements EventListener {
 
             public void run() {
                 mSmilPlayer = SmilPlayer.getPlayer();
-                initMediaController();
-                mSlideView.setMediaController(mMediaController);
+                if (mSlideCount > 1) {
+                    // Only show the slideshow controller if we have more than a single slide.
+                    // Otherwise, when we play a sound on a single slide, it appears like
+                    // the slide controller should control the sound (seeking, ff'ing, etc).
+                    initMediaController();
+                    mSlideView.setMediaController(mMediaController);
+                }
                 // Use SmilHelper.getDocument() to ensure rebuilding the
                 // entire SMIL document.
                 mSmilDoc = SmilHelper.getDocument(model);
@@ -263,6 +269,9 @@ public class SlideshowActivity extends Activity implements EventListener {
             ((EventTarget) mSmilDoc).removeEventListener(
                     SmilDocumentImpl.SMIL_DOCUMENT_END_EVENT, this, false);
         }
+        if (mSmilPlayer != null) {
+            mSmilPlayer.pause();
+        }
     }
 
     @Override
@@ -286,6 +295,7 @@ public class SlideshowActivity extends Activity implements EventListener {
         switch (keyCode) {
             case KeyEvent.KEYCODE_VOLUME_DOWN:
             case KeyEvent.KEYCODE_VOLUME_UP:
+            case KeyEvent.KEYCODE_VOLUME_MUTE:
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
             case KeyEvent.KEYCODE_DPAD_LEFT:
@@ -310,6 +320,16 @@ public class SlideshowActivity extends Activity implements EventListener {
 
     private class SmilPlayerController implements MediaPlayerControl {
         private final SmilPlayer mPlayer;
+        /**
+         * We need to cache the playback state because when the MediaController issues a play or
+         * pause command, it expects subsequent calls to {@link #isPlaying()} to return the right
+         * value immediately. However, the SmilPlayer executes play and pause asynchronously, so
+         * {@link #isPlaying()} will return the wrong value for some time. That's why we keep our
+         * own version of the state of whether the player is playing.
+         *
+         * Initialized to true because we always programatically start the SmilPlayer upon creation
+         */
+        private boolean mCachedIsPlaying = true;
 
         public SmilPlayerController(SmilPlayer player) {
             mPlayer = player;
@@ -329,13 +349,12 @@ public class SlideshowActivity extends Activity implements EventListener {
         }
 
         public boolean isPlaying() {
-            return mPlayer != null ? mPlayer.isPlayingState() : false;
+            return mCachedIsPlaying;
         }
 
         public void pause() {
-            if (mPlayer != null) {
-                mPlayer.pause();
-            }
+            mPlayer.pause();
+            mCachedIsPlaying = false;
         }
 
         public void seekTo(int pos) {
@@ -343,9 +362,8 @@ public class SlideshowActivity extends Activity implements EventListener {
         }
 
         public void start() {
-            if (mPlayer != null) {
-                mPlayer.start();
-            }
+            mPlayer.start();
+            mCachedIsPlaying = true;
         }
 
         public boolean canPause() {

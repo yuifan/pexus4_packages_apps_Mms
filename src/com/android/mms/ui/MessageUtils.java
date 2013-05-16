@@ -17,10 +17,45 @@
 
 package com.android.mms.ui;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ContentUris;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.DialogInterface.OnCancelListener;
+import android.content.DialogInterface.OnClickListener;
+import android.content.Intent;
+import android.content.res.Resources;
+import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
+import android.media.CamcorderProfile;
+import android.media.RingtoneManager;
+import android.net.Uri;
+import android.os.Environment;
+import android.os.Handler;
+import android.provider.MediaStore;
+import android.provider.Telephony.Mms;
+import android.provider.Telephony.Sms;
+import android.telephony.PhoneNumberUtils;
+import android.text.TextUtils;
+import android.text.format.DateUtils;
+import android.text.format.Time;
+import android.text.style.URLSpan;
+import android.util.Log;
+import android.widget.Toast;
+
+import com.android.mms.LogTag;
 import com.android.mms.MmsApp;
 import com.android.mms.MmsConfig;
 import com.android.mms.R;
-import com.android.mms.LogTag;
+import com.android.mms.TempFileProvider;
 import com.android.mms.data.WorkingMessage;
 import com.android.mms.model.MediaModel;
 import com.android.mms.model.SlideModel;
@@ -39,41 +74,6 @@ import com.google.android.mms.pdu.PduPart;
 import com.google.android.mms.pdu.PduPersister;
 import com.google.android.mms.pdu.RetrieveConf;
 import com.google.android.mms.pdu.SendReq;
-import android.database.sqlite.SqliteWrapper;
-
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.ContentUris;
-import android.content.Context;
-import android.content.DialogInterface;
-import android.content.Intent;
-import android.content.DialogInterface.OnCancelListener;
-import android.content.DialogInterface.OnClickListener;
-import android.content.res.Resources;
-import android.database.Cursor;
-import android.graphics.Bitmap;
-import android.graphics.Bitmap.CompressFormat;
-import android.media.RingtoneManager;
-import android.net.Uri;
-import android.os.Environment;
-import android.os.Handler;
-import android.provider.Telephony.Mms;
-import android.provider.Telephony.Sms;
-import android.telephony.PhoneNumberUtils;
-import android.telephony.TelephonyManager;
-import android.text.TextUtils;
-import android.text.format.DateUtils;
-import android.text.format.Time;
-import android.text.style.URLSpan;
-import android.util.Log;
-import android.widget.Toast;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * An utility class for managing messages.
@@ -85,6 +85,7 @@ public class MessageUtils {
 
     private static final String TAG = LogTag.TAG;
     private static String sLocalNumber;
+    private static String[] sNoSubjectStrings;
 
     // Cache of both groups of space-separated ids to their full
     // comma-separated display names, as well as individual ids to
@@ -96,6 +97,9 @@ public class MessageUtils {
     private static final Map<String, String> sRecipientAddress =
             new ConcurrentHashMap<String, String>(20 /* initial capacity */);
 
+    // When we pass a video record duration to the video recorder, use one of these values.
+    private static final int[] sVideoDuration =
+            new int[] {0, 5, 10, 15, 20, 30, 40, 50, 60, 90, 120};
 
     /**
      * MMS address parsing data structures
@@ -116,6 +120,31 @@ public class MessageUtils {
 
     private MessageUtils() {
         // Forbidden being instantiated.
+    }
+
+    /**
+     * cleanseMmsSubject will take a subject that's says, "<Subject: no subject>", and return
+     * a null string. Otherwise it will return the original subject string.
+     * @param context a regular context so the function can grab string resources
+     * @param subject the raw subject
+     * @return
+     */
+    public static String cleanseMmsSubject(Context context, String subject) {
+        if (TextUtils.isEmpty(subject)) {
+            return subject;
+        }
+        if (sNoSubjectStrings == null) {
+            sNoSubjectStrings =
+                    context.getResources().getStringArray(R.array.empty_subject_strings);
+
+        }
+        final int len = sNoSubjectStrings.length;
+        for (int i = 0; i < len; i++) {
+            if (subject.equalsIgnoreCase(sNoSubjectStrings[i])) {
+                return null;
+            }
+        }
+        return subject;
     }
 
     public static String getMessageDetails(Context context, Cursor cursor, int size) {
@@ -295,6 +324,8 @@ public class MessageUtils {
     }
 
     private static String getTextMessageDetails(Context context, Cursor cursor) {
+        Log.d(TAG, "getTextMessageDetails");
+
         StringBuilder details = new StringBuilder();
         Resources res = context.getResources();
 
@@ -312,7 +343,17 @@ public class MessageUtils {
         }
         details.append(cursor.getString(MessageListAdapter.COLUMN_SMS_ADDRESS));
 
-        // Date: ***
+        // Sent: ***
+        if (smsType == Sms.MESSAGE_TYPE_INBOX) {
+            long date_sent = cursor.getLong(MessageListAdapter.COLUMN_SMS_DATE_SENT);
+            if (date_sent > 0) {
+                details.append('\n');
+                details.append(res.getString(R.string.sent_label));
+                details.append(MessageUtils.formatTimeStampString(context, date_sent, true));
+            }
+        }
+
+        // Received: ***
         details.append('\n');
         if (smsType == Sms.MESSAGE_TYPE_DRAFT) {
             details.append(res.getString(R.string.saved_label));
@@ -324,6 +365,18 @@ public class MessageUtils {
 
         long date = cursor.getLong(MessageListAdapter.COLUMN_SMS_DATE);
         details.append(MessageUtils.formatTimeStampString(context, date, true));
+
+        // Delivered: ***
+        if (smsType == Sms.MESSAGE_TYPE_SENT) {
+            // For sent messages with delivery reports, we stick the delivery time in the
+            // date_sent column (see MessageStatusReceiver).
+            long dateDelivered = cursor.getLong(MessageListAdapter.COLUMN_SMS_DATE_SENT);
+            if (dateDelivered > 0) {
+                details.append('\n');
+                details.append(res.getString(R.string.delivered_label));
+                details.append(MessageUtils.formatTimeStampString(context, dateDelivered, true));
+            }
+        }
 
         // Error code: ***
         int errorCode = cursor.getInt(MessageListAdapter.COLUMN_SMS_ERROR_CODE);
@@ -349,9 +402,9 @@ public class MessageUtils {
         }
     }
 
-    public static int getAttachmentType(SlideshowModel model) {
-        if (model == null) {
-            return WorkingMessage.TEXT;
+    public static int getAttachmentType(SlideshowModel model, MultimediaMessagePdu mmp) {
+        if (model == null || mmp == null) {
+            return MessageItem.ATTACHMENT_TYPE_NOT_LOADED;
         }
 
         int numberOfSlides = model.size();
@@ -379,9 +432,15 @@ public class MessageUtils {
             if (slide.hasText()) {
                 return WorkingMessage.TEXT;
             }
+
+            // Handle the multimedia message only has subject
+            String subject = mmp.getSubject() != null ? mmp.getSubject().getString() : null;
+            if (!TextUtils.isEmpty(subject)) {
+                return WorkingMessage.TEXT;
+            }
         }
 
-        return WorkingMessage.TEXT;
+        return MessageItem.ATTACHMENT_TYPE_NOT_LOADED;
     }
 
     public static String formatTimeStampString(Context context, long when) {
@@ -420,112 +479,87 @@ public class MessageUtils {
         return DateUtils.formatDateTime(context, when, format_flags);
     }
 
-    /**
-     * @parameter recipientIds space-separated list of ids
-     */
-    public static String getRecipientsByIds(Context context, String recipientIds,
-                                            boolean allowQuery) {
-        String value = sRecipientAddress.get(recipientIds);
-        if (value != null) {
-            return value;
-        }
-        if (!TextUtils.isEmpty(recipientIds)) {
-            StringBuilder addressBuf = extractIdsToAddresses(
-                    context, recipientIds, allowQuery);
-            if (addressBuf == null) {
-                // temporary error?  Don't memoize.
-                return "";
-            }
-            value = addressBuf.toString();
-        } else {
-            value = "";
-        }
-        sRecipientAddress.put(recipientIds, value);
-        return value;
+    public static void selectAudio(Activity activity, int requestCode) {
+        Intent intent = new Intent(RingtoneManager.ACTION_RINGTONE_PICKER);
+        intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, false);
+        intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false);
+        intent.putExtra(RingtoneManager.EXTRA_RINGTONE_INCLUDE_DRM, false);
+        intent.putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE,
+                activity.getString(R.string.select_audio));
+        activity.startActivityForResult(intent, requestCode);
     }
 
-    private static StringBuilder extractIdsToAddresses(Context context, String recipients,
-                                                       boolean allowQuery) {
-        StringBuilder addressBuf = new StringBuilder();
-        String[] recipientIds = recipients.split(" ");
-        boolean firstItem = true;
-        for (String recipientId : recipientIds) {
-            String value = sRecipientAddress.get(recipientId);
-
-            if (value == null) {
-                if (!allowQuery) {
-                    // when allowQuery is false, if any value from sRecipientAddress.get() is null,
-                    // return null for the whole thing. We don't want to stick partial result
-                    // into sRecipientAddress for multiple recipient ids.
-                    return null;
-                }
-
-                Uri uri = Uri.parse("content://mms-sms/canonical-address/" + recipientId);
-                Cursor c = SqliteWrapper.query(context, context.getContentResolver(),
-                                               uri, null, null, null, null);
-                if (c != null) {
-                    try {
-                        if (c.moveToFirst()) {
-                            value = c.getString(0);
-                            sRecipientAddress.put(recipientId, value);
-                        }
-                    } finally {
-                        c.close();
-                    }
-                }
-            }
-            if (value == null) {
-                continue;
-            }
-            if (firstItem) {
-                firstItem = false;
-            } else {
-                addressBuf.append(";");
-            }
-            addressBuf.append(value);
-        }
-
-        return (addressBuf.length() == 0) ? null : addressBuf;
+    public static void recordSound(Activity activity, int requestCode, long sizeLimit) {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType(ContentType.AUDIO_AMR);
+        intent.setClassName("com.android.soundrecorder",
+                "com.android.soundrecorder.SoundRecorder");
+        intent.putExtra(android.provider.MediaStore.Audio.Media.EXTRA_MAX_BYTES, sizeLimit);
+        activity.startActivityForResult(intent, requestCode);
     }
 
-    public static void selectAudio(Context context, int requestCode) {
-        if (context instanceof Activity) {
-            Intent intent = new Intent(RingtoneManager.ACTION_RINGTONE_PICKER);
-            intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, false);
-            intent.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false);
-            intent.putExtra(RingtoneManager.EXTRA_RINGTONE_INCLUDE_DRM, false);
-            intent.putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE,
-                    context.getString(R.string.select_audio));
-            ((Activity) context).startActivityForResult(intent, requestCode);
+    public static void recordVideo(Activity activity, int requestCode, long sizeLimit) {
+        // The video recorder can sometimes return a file that's larger than the max we
+        // say we can handle. Try to handle that overshoot by specifying an 85% limit.
+        sizeLimit *= .85F;
+
+        int durationLimit = getVideoCaptureDurationLimit(sizeLimit);
+
+        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
+            log("recordVideo: durationLimit: " + durationLimit +
+                    " sizeLimit: " + sizeLimit);
         }
+
+        Intent intent = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_VIDEO_QUALITY, 0);
+        intent.putExtra("android.intent.extra.sizeLimit", sizeLimit);
+        intent.putExtra("android.intent.extra.durationLimit", durationLimit);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, TempFileProvider.SCRAP_CONTENT_URI);
+        activity.startActivityForResult(intent, requestCode);
     }
 
-    public static void recordSound(Context context, int requestCode) {
-        if (context instanceof Activity) {
-            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-            intent.setType(ContentType.AUDIO_AMR);
-            intent.setClassName("com.android.soundrecorder",
-                    "com.android.soundrecorder.SoundRecorder");
+    public static void capturePicture(Activity activity, int requestCode) {
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, TempFileProvider.SCRAP_CONTENT_URI);
+        activity.startActivityForResult(intent, requestCode);
+    }
 
-            ((Activity) context).startActivityForResult(intent, requestCode);
+    // Public for until tests
+    public static int getVideoCaptureDurationLimit(long bytesAvailable) {
+        CamcorderProfile camcorder = CamcorderProfile.get(CamcorderProfile.QUALITY_LOW);
+        if (camcorder == null) {
+            return 0;
         }
+        bytesAvailable *= 8;        // convert to bits
+        long seconds = bytesAvailable / (camcorder.audioBitRate + camcorder.videoBitRate);
+
+        // Find the best match for one of the fixed durations
+        for (int i = sVideoDuration.length - 1; i >= 0; i--) {
+            if (seconds >= sVideoDuration[i]) {
+                return sVideoDuration[i];
+            }
+        }
+        return 0;
     }
 
     public static void selectVideo(Context context, int requestCode) {
-        selectMediaByType(context, requestCode, ContentType.VIDEO_UNSPECIFIED);
+        selectMediaByType(context, requestCode, ContentType.VIDEO_UNSPECIFIED, true);
     }
 
     public static void selectImage(Context context, int requestCode) {
-        selectMediaByType(context, requestCode, ContentType.IMAGE_UNSPECIFIED);
+        selectMediaByType(context, requestCode, ContentType.IMAGE_UNSPECIFIED, false);
     }
 
     private static void selectMediaByType(
-            Context context, int requestCode, String contentType) {
+            Context context, int requestCode, String contentType, boolean localFilesOnly) {
          if (context instanceof Activity) {
 
             Intent innerIntent = new Intent(Intent.ACTION_GET_CONTENT);
 
             innerIntent.setType(contentType);
+            if (localFilesOnly) {
+                innerIntent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+            }
 
             Intent wrapperIntent = Intent.createChooser(innerIntent, null);
 
@@ -548,25 +582,26 @@ public class MessageUtils {
 
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.putExtra("SingleItemOnly", true); // So we don't see "surrounding" images in Gallery
 
         String contentType;
-        if (mm.isDrmProtected()) {
-            contentType = mm.getDrmObject().getContentType();
-        } else {
-            contentType = mm.getContentType();
-        }
+        contentType = mm.getContentType();
         intent.setDataAndType(mm.getUri(), contentType);
         context.startActivity(intent);
     }
 
-    public static void showErrorDialog(Context context,
+    public static void showErrorDialog(Activity activity,
             String title, String message) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(context);
+        if (activity.isFinishing()) {
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(activity);
 
         builder.setIcon(R.drawable.ic_sms_mms_not_delivered);
         builder.setTitle(title);
         builder.setMessage(message);
         builder.setPositiveButton(android.R.string.ok, new OnClickListener() {
+            @Override
             public void onClick(DialogInterface dialog, int which) {
                 if (which == DialogInterface.BUTTON_POSITIVE) {
                     dialog.dismiss();
@@ -579,35 +614,11 @@ public class MessageUtils {
     /**
      * The quality parameter which is used to compress JPEG images.
      */
-    public static final int IMAGE_COMPRESSION_QUALITY = 80;
+    public static final int IMAGE_COMPRESSION_QUALITY = 95;
     /**
      * The minimum quality parameter which is used to compress JPEG images.
      */
     public static final int MINIMUM_IMAGE_COMPRESSION_QUALITY = 50;
-
-    public static Uri saveBitmapAsPart(Context context, Uri messageUri, Bitmap bitmap)
-            throws MmsException {
-
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        bitmap.compress(CompressFormat.JPEG, IMAGE_COMPRESSION_QUALITY, os);
-
-        PduPart part = new PduPart();
-
-        part.setContentType("image/jpeg".getBytes());
-        String contentId = "Image" + System.currentTimeMillis();
-        part.setContentLocation((contentId + ".jpg").getBytes());
-        part.setContentId(contentId.getBytes());
-        part.setData(os.toByteArray());
-
-        Uri retVal = PduPersister.getPduPersister(context).persistPart(part,
-                        ContentUris.parseId(messageUri));
-
-        if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
-            log("saveBitmapAsPart: persisted part with uri=" + retVal);
-        }
-
-        return retVal;
-    }
 
     /**
      * Message overhead that reduces the maximum image byte size.
@@ -626,6 +637,7 @@ public class MessageUtils {
         // Stash the runnable for showing it away so we can cancel
         // it later if the resize completes ahead of the deadline.
         final Runnable showProgress = new Runnable() {
+            @Override
             public void run() {
                 Toast.makeText(context, R.string.compressing, Toast.LENGTH_SHORT).show();
             }
@@ -634,13 +646,25 @@ public class MessageUtils {
         handler.postDelayed(showProgress, 1000);
 
         new Thread(new Runnable() {
+            @Override
             public void run() {
                 final PduPart part;
                 try {
                     UriImage image = new UriImage(context, imageUri);
+                    int widthLimit = MmsConfig.getMaxImageWidth();
+                    int heightLimit = MmsConfig.getMaxImageHeight();
+                    // In mms_config.xml, the max width has always been declared larger than the max
+                    // height. Swap the width and height limits if necessary so we scale the picture
+                    // as little as possible.
+                    if (image.getHeight() > image.getWidth()) {
+                        int temp = widthLimit;
+                        widthLimit = heightLimit;
+                        heightLimit = temp;
+                    }
+
                     part = image.getResizedImageAsPart(
-                        MmsConfig.getMaxImageWidth(),
-                        MmsConfig.getMaxImageHeight(),
+                        widthLimit,
+                        heightLimit,
                         MmsConfig.getMaxMessageSize() - MESSAGE_OVERHEAD);
                 } finally {
                     // Cancel pending show of the progress toast if necessary.
@@ -648,19 +672,18 @@ public class MessageUtils {
                 }
 
                 handler.post(new Runnable() {
+                    @Override
                     public void run() {
                         cb.onResizeResult(part, append);
                     }
                 });
             }
-        }).start();
+        }, "MessageUtils.resizeImageAsync").start();
     }
 
     public static void showDiscardDraftConfirmDialog(Context context,
             OnClickListener listener) {
         new AlertDialog.Builder(context)
-                .setIcon(android.R.drawable.ic_dialog_alert)
-                .setTitle(R.string.discard_message)
                 .setMessage(R.string.discard_message_reason)
                 .setPositiveButton(R.string.yes, listener)
                 .setNegativeButton(R.string.no, null)
@@ -691,20 +714,36 @@ public class MessageUtils {
     }
 
     public static void handleReadReport(final Context context,
-            final long threadId,
+            final Collection<Long> threadIds,
             final int status,
             final Runnable callback) {
-        String selection = Mms.MESSAGE_TYPE + " = " + PduHeaders.MESSAGE_TYPE_RETRIEVE_CONF
-            + " AND " + Mms.READ + " = 0"
-            + " AND " + Mms.READ_REPORT + " = " + PduHeaders.VALUE_YES;
+        StringBuilder selectionBuilder = new StringBuilder(Mms.MESSAGE_TYPE + " = "
+                + PduHeaders.MESSAGE_TYPE_RETRIEVE_CONF
+                + " AND " + Mms.READ + " = 0"
+                + " AND " + Mms.READ_REPORT + " = " + PduHeaders.VALUE_YES);
 
-        if (threadId != -1) {
-            selection = selection + " AND " + Mms.THREAD_ID + " = " + threadId;
+        String[] selectionArgs = null;
+        if (threadIds != null) {
+            String threadIdSelection = null;
+            StringBuilder buf = new StringBuilder();
+            selectionArgs = new String[threadIds.size()];
+            int i = 0;
+
+            for (long threadId : threadIds) {
+                if (i > 0) {
+                    buf.append(" OR ");
+                }
+                buf.append(Mms.THREAD_ID).append("=?");
+                selectionArgs[i++] = Long.toString(threadId);
+            }
+            threadIdSelection = buf.toString();
+
+            selectionBuilder.append(" AND (" + threadIdSelection + ")");
         }
 
         final Cursor c = SqliteWrapper.query(context, context.getContentResolver(),
                         Mms.Inbox.CONTENT_URI, new String[] {Mms._ID, Mms.MESSAGE_ID},
-                        selection, null, null);
+                        selectionBuilder.toString(), selectionArgs, null);
 
         if (c == null) {
             return;
@@ -728,6 +767,7 @@ public class MessageUtils {
         }
 
         OnClickListener positiveListener = new OnClickListener() {
+            @Override
             public void onClick(DialogInterface dialog, int which) {
                 for (final Map.Entry<String, String> entry : map.entrySet()) {
                     MmsMessageSender.sendReadRec(context, entry.getValue(),
@@ -742,6 +782,7 @@ public class MessageUtils {
         };
 
         OnClickListener negativeListener = new OnClickListener() {
+            @Override
             public void onClick(DialogInterface dialog, int which) {
                 if (callback != null) {
                     callback.run();
@@ -751,6 +792,7 @@ public class MessageUtils {
         };
 
         OnCancelListener cancelListener = new OnCancelListener() {
+            @Override
             public void onCancel(DialogInterface dialog) {
                 if (callback != null) {
                     callback.run();
@@ -815,49 +857,66 @@ public class MessageUtils {
      *       This is hacky though since we will do saveDraft twice and slow down the UI.
      *       We should pass the slideshow in intent extra to the view activity instead of
      *       asking it to read attachments from database.
-     * @param context
+     * @param activity
      * @param msgUri the MMS message URI in database
      * @param slideshow the slideshow to save
      * @param persister the PDU persister for updating the database
      * @param sendReq the SendReq for updating the database
      */
-    public static void viewMmsMessageAttachment(Context context, Uri msgUri,
-            SlideshowModel slideshow) {
+    public static void viewMmsMessageAttachment(Activity activity, Uri msgUri,
+            SlideshowModel slideshow, AsyncDialog asyncDialog) {
+        viewMmsMessageAttachment(activity, msgUri, slideshow, 0, asyncDialog);
+    }
+
+    public static void viewMmsMessageAttachment(final Activity activity, final Uri msgUri,
+            final SlideshowModel slideshow, final int requestCode, AsyncDialog asyncDialog) {
         boolean isSimple = (slideshow == null) ? false : slideshow.isSimple();
         if (isSimple) {
             // In attachment-editor mode, we only ever have one slide.
-            MessageUtils.viewSimpleSlideshow(context, slideshow);
+            MessageUtils.viewSimpleSlideshow(activity, slideshow);
         } else {
-            // If a slideshow was provided, save it to disk first.
-            if (slideshow != null) {
-                PduPersister persister = PduPersister.getPduPersister(context);
-                try {
-                    PduBody pb = slideshow.toPduBody();
-                    persister.updateParts(msgUri, pb);
-                    slideshow.sync(pb);
-                } catch (MmsException e) {
-                    Log.e(TAG, "Unable to save message for preview");
-                    return;
+            // The user wants to view the slideshow. We have to persist the slideshow parts
+            // in a background task. If the task takes longer than a half second, a progress dialog
+            // is displayed. Once the PDU persisting is done, another runnable on the UI thread get
+            // executed to start the SlideshowActivity.
+            asyncDialog.runAsync(new Runnable() {
+                @Override
+                public void run() {
+                    // If a slideshow was provided, save it to disk first.
+                    if (slideshow != null) {
+                        PduPersister persister = PduPersister.getPduPersister(activity);
+                        try {
+                            PduBody pb = slideshow.toPduBody();
+                            persister.updateParts(msgUri, pb, null);
+                            slideshow.sync(pb);
+                        } catch (MmsException e) {
+                            Log.e(TAG, "Unable to save message for preview");
+                            return;
+                        }
+                    }
                 }
-            }
-            // Launch the slideshow activity to play/view.
-            Intent intent = new Intent(context, SlideshowActivity.class);
-            intent.setData(msgUri);
-            context.startActivity(intent);
+            }, new Runnable() {
+                @Override
+                public void run() {
+                    // Once the above background thread is complete, this runnable is run
+                    // on the UI thread to launch the slideshow activity.
+                    launchSlideshowActivity(activity, msgUri, requestCode);
+                }
+            }, R.string.building_slideshow_title);
         }
     }
 
-    public static void viewMmsMessageAttachment(Context context, WorkingMessage msg) {
-        SlideshowModel slideshow = msg.getSlideshow();
-        if (slideshow == null) {
-            throw new IllegalStateException("msg.getSlideshow() == null");
-        }
-        if (slideshow.isSimple()) {
-            MessageUtils.viewSimpleSlideshow(context, slideshow);
+    public static void launchSlideshowActivity(Context context, Uri msgUri, int requestCode) {
+        // Launch the slideshow activity to play/view.
+        Intent intent = new Intent(context, SlideshowActivity.class);
+        intent.setData(msgUri);
+        intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (requestCode > 0 && context instanceof Activity) {
+            ((Activity)context).startActivityForResult(intent, requestCode);
         } else {
-            Uri uri = msg.saveAsMms(false);
-            viewMmsMessageAttachment(context, uri, slideshow);
+            context.startActivity(intent);
         }
+
     }
 
     /**
@@ -873,58 +932,32 @@ public class MessageUtils {
         }
     }
 
+    // An alias (or commonly called "nickname") is:
+    // Nickname must begin with a letter.
+    // Only letters a-z, numbers 0-9, or . are allowed in Nickname field.
     public static boolean isAlias(String string) {
         if (!MmsConfig.isAliasEnabled()) {
             return false;
         }
 
-        if (TextUtils.isEmpty(string)) {
-            return false;
-        }
-
-        // TODO: not sure if this is the right thing to use. Mms.isPhoneNumber() is
-        // intended for searching for things that look like they might be phone numbers
-        // in arbitrary text, not for validating whether something is in fact a phone number.
-        // It will miss many things that are legitimate phone numbers.
-        if (Mms.isPhoneNumber(string)) {
-            return false;
-        }
-
-        if (!isAlphaNumeric(string)) {
-            return false;
-        }
-
-        int len = string.length();
+        int len = string == null ? 0 : string.length();
 
         if (len < MmsConfig.getAliasMinChars() || len > MmsConfig.getAliasMaxChars()) {
             return false;
         }
 
-        return true;
-    }
-
-    public static boolean isAlphaNumeric(String s) {
-        char[] chars = s.toCharArray();
-        for (int x = 0; x < chars.length; x++) {
-            char c = chars[x];
-
-            if ((c >= 'a') && (c <= 'z')) {
-                continue;
-            }
-            if ((c >= 'A') && (c <= 'Z')) {
-                continue;
-            }
-            if ((c >= '0') && (c <= '9')) {
-                continue;
-            }
-
+        if (!Character.isLetter(string.charAt(0))) {    // Nickname begins with a letter
             return false;
         }
+        for (int i = 1; i < len; i++) {
+            char c = string.charAt(i);
+            if (!(Character.isLetterOrDigit(c) || c == '.')) {
+                return false;
+            }
+        }
+
         return true;
     }
-
-
-
 
     /**
      * Given a phone number, return the string without syntactic sugar, meaning parens,

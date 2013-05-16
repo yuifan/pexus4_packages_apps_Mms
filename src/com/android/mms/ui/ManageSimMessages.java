@@ -17,21 +17,18 @@
 
 package com.android.mms.ui;
 
-import com.android.mms.R;
-import android.database.sqlite.SqliteWrapper;
-import com.android.mms.transaction.MessagingNotification;
-
+import android.app.ActionBar;
 import android.app.Activity;
 import android.app.AlertDialog;
-
 import android.content.AsyncQueryHandler;
 import android.content.ContentResolver;
 import android.content.DialogInterface;
-import android.content.Intent;
 import android.content.DialogInterface.OnClickListener;
+import android.content.Intent;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteException;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -46,6 +43,9 @@ import android.view.Window;
 import android.widget.AdapterView;
 import android.widget.ListView;
 import android.widget.TextView;
+
+import com.android.mms.R;
+import com.android.mms.transaction.MessagingNotification;
 
 /**
  * Displays a list of the SMS messages stored on the ICC.
@@ -92,6 +92,9 @@ public class ManageSimMessages extends Activity
         setContentView(R.layout.sim_list);
         mSimList = (ListView) findViewById(R.id.messages);
         mMessage = (TextView) findViewById(R.id.empty_message);
+
+        ActionBar actionBar = getActionBar();
+        actionBar.setDisplayHomeAsUpEnabled(true);
 
         init();
     }
@@ -147,6 +150,8 @@ public class ManageSimMessages extends Activity
                 // Let user know the SIM is empty
                 updateState(SHOW_EMPTY);
             }
+            // Show option menu when query complete.
+            invalidateOptionsMenu();
         }
     }
 
@@ -280,7 +285,7 @@ public class ManageSimMessages extends Activity
     public boolean onPrepareOptionsMenu(Menu menu) {
         menu.clear();
 
-        if ((null != mCursor) && (mCursor.getCount() > 0) && mState == SHOW_LIST) {
+        if (mState == SHOW_LIST && (null != mCursor) && (mCursor.getCount() > 0)) {
             menu.add(0, OPTION_MENU_DELETE_ALL, 0, R.string.menu_delete_messages).setIcon(
                     android.R.drawable.ic_menu_delete);
         }
@@ -300,6 +305,12 @@ public class ManageSimMessages extends Activity
                     }
                 }, R.string.confirm_delete_all_SIM_messages);
                 break;
+
+            case android.R.id.home:
+                // The user clicked on the Messaging icon in the action bar. Take them back from
+                // wherever they came from
+                finish();
+                break;
         }
 
         return true;
@@ -308,7 +319,7 @@ public class ManageSimMessages extends Activity
     private void confirmDeleteDialog(OnClickListener listener, int messageId) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle(R.string.confirm_dialog_title);
-        builder.setIcon(android.R.drawable.ic_dialog_alert);
+        builder.setIconAttribute(android.R.attr.alertDialogIcon);
         builder.setCancelable(true);
         builder.setPositiveButton(R.string.yes, listener);
         builder.setNegativeButton(R.string.no, null);
@@ -329,6 +340,7 @@ public class ManageSimMessages extends Activity
                 mMessage.setVisibility(View.GONE);
                 setTitle(getString(R.string.sim_manage_messages_title));
                 setProgressBarIndeterminateVisibility(false);
+                mSimList.requestFocus();
                 break;
             case SHOW_EMPTY:
                 mSimList.setVisibility(View.GONE);

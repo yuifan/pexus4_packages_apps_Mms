@@ -17,17 +17,6 @@
 
 package com.android.mms.util;
 
-import com.android.mms.R;
-import com.android.mms.data.Contact;
-import com.android.mms.ui.MessagingPreferenceActivity;
-import com.google.android.mms.MmsException;
-import com.google.android.mms.pdu.EncodedStringValue;
-import com.google.android.mms.pdu.NotificationInd;
-import com.google.android.mms.pdu.PduPersister;
-import android.database.sqlite.SqliteWrapper;
-import com.android.internal.telephony.TelephonyIntents;
-import com.android.internal.telephony.TelephonyProperties;
-
 import android.content.BroadcastReceiver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -36,28 +25,39 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.os.Handler;
+import android.os.SystemProperties;
 import android.preference.PreferenceManager;
 import android.provider.Telephony.Mms;
 import android.telephony.ServiceState;
-import android.util.Config;
 import android.util.Log;
 import android.widget.Toast;
 
-import android.os.SystemProperties;
+import com.android.internal.telephony.TelephonyIntents;
+import com.android.internal.telephony.TelephonyProperties;
+import com.android.mms.R;
+import com.android.mms.data.Contact;
+import com.android.mms.ui.MessagingPreferenceActivity;
+import com.google.android.mms.MmsException;
+import com.google.android.mms.pdu.EncodedStringValue;
+import com.google.android.mms.pdu.NotificationInd;
+import com.google.android.mms.pdu.PduPersister;
 
 public class DownloadManager {
     private static final String TAG = "DownloadManager";
     private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean LOCAL_LOGV = false;
 
-    private static final int DEFERRED_MASK           = 0x04;
+    public static final int DEFERRED_MASK           = 0x04;
 
+    public static final int STATE_UNKNOWN           = 0x00;
     public static final int STATE_UNSTARTED         = 0x80;
     public static final int STATE_DOWNLOADING       = 0x81;
     public static final int STATE_TRANSIENT_FAILURE = 0x82;
     public static final int STATE_PERMANENT_FAILURE = 0x87;
+    public static final int STATE_PRE_DOWNLOADING   = 0x88;
 
     private final Context mContext;
     private final Handler mHandler;
@@ -193,7 +193,7 @@ public class DownloadManager {
                 && (state == STATE_DOWNLOADING)) {
                 mHandler.post(new Runnable() {
                     public void run() {
-                        Toast.makeText(mContext, R.string.dl_expired_notification,
+                        Toast.makeText(mContext, R.string.service_message_not_found,
                                 Toast.LENGTH_LONG).show();
                     }
                 });
@@ -265,7 +265,7 @@ public class DownloadManager {
         if (cursor != null) {
             try {
                 if (cursor.moveToFirst()) {
-                    return cursor.getInt(0) &~ DEFERRED_MASK;
+                    return cursor.getInt(0) & ~DEFERRED_MASK;
                 }
             } finally {
                 cursor.close();

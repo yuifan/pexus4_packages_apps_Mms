@@ -25,6 +25,7 @@ import android.content.ContentValues;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
 import android.database.Cursor;
+import android.database.sqlite.SqliteWrapper;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -35,14 +36,10 @@ import android.provider.Telephony.Sms.Inbox;
 import android.telephony.SmsMessage;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.Config;
 import android.view.Window;
 
 import com.android.mms.R;
-import com.android.mms.transaction.SmsReceiverService;
 import com.android.mms.transaction.MessagingNotification;
-
-import android.database.sqlite.SqliteWrapper;
 
 /**
  * Display a class-zero SMS message to the user. Wait for the user to dismiss
@@ -93,7 +90,10 @@ public class ClassZeroActivity extends Activity {
             messageUri = storeMessage(mMessage);
         }
         if (!mRead && messageUri != null) {
-            MessagingNotification.nonBlockingUpdateNewMessageIndicator(this, true, false);
+            MessagingNotification.nonBlockingUpdateNewMessageIndicator(
+                    this,
+                    MessagingNotification.THREAD_ALL,   // always notify on class-zero msgs
+                    false);
         }
     }
 
@@ -105,7 +105,8 @@ public class ClassZeroActivity extends Activity {
                 R.drawable.class_zero_background);
 
         byte[] pdu = getIntent().getByteArrayExtra("pdu");
-        mMessage = SmsMessage.createFromPdu(pdu);
+        String format = getIntent().getStringExtra("format");
+        mMessage = SmsMessage.createFromPdu(pdu, format);
         CharSequence messageChars = mMessage.getMessageBody();
         String message = messageChars.toString();
         if (TextUtils.isEmpty(message)) {
@@ -137,7 +138,7 @@ public class ClassZeroActivity extends Activity {
             mHandler.sendEmptyMessage(ON_AUTO_SAVE);
         } else {
             mHandler.sendEmptyMessageAtTime(ON_AUTO_SAVE, mTimerSet);
-            if (Config.DEBUG) {
+            if (false) {
                 Log.d(TAG, "onRestart time = " + Long.toString(mTimerSet) + " "
                         + this.toString());
             }
@@ -148,7 +149,7 @@ public class ClassZeroActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         outState.putLong(TIMER_FIRE, mTimerSet);
-        if (Config.DEBUG) {
+        if (false) {
             Log.d(TAG, "onSaveInstanceState time = " + Long.toString(mTimerSet)
                     + " " + this.toString());
         }
@@ -158,7 +159,7 @@ public class ClassZeroActivity extends Activity {
     protected void onStop() {
         super.onStop();
         mHandler.removeMessages(ON_AUTO_SAVE);
-        if (Config.DEBUG) {
+        if (false) {
             Log.d(TAG, "onStop time = " + Long.toString(mTimerSet)
                     + " " + this.toString());
         }
@@ -237,7 +238,7 @@ public class ClassZeroActivity extends Activity {
         ContentValues values = extractContentValues(sms);
         values.put(Inbox.BODY, sms.getDisplayMessageBody());
         ContentResolver resolver = getContentResolver();
-        if (Config.DEBUG) {
+        if (false) {
             Log.d(TAG, "storeMessage " + this.toString());
         }
         return SqliteWrapper.insert(this, resolver, Inbox.CONTENT_URI, values);

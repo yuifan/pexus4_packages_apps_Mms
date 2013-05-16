@@ -23,13 +23,14 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import android.content.Context;
 import android.content.res.XmlResourceParser;
-import android.util.Config;
 import android.util.Log;
+
+import com.android.internal.telephony.TelephonyProperties;
 
 public class MmsConfig {
     private static final String TAG = "MmsConfig";
-    private static final boolean DEBUG = false;
-    private static final boolean LOCAL_LOGV = DEBUG ? Config.LOGD : Config.LOGV;
+    private static final boolean DEBUG = true;
+    private static final boolean LOCAL_LOGV = false;
 
     private static final String DEFAULT_HTTP_KEY_X_WAP_PROFILE = "x-wap-profile";
     private static final String DEFAULT_USER_AGENT = "Android-Mms/2.0";
@@ -53,17 +54,32 @@ public class MmsConfig {
     private static int mMaxImageHeight = MAX_IMAGE_HEIGHT;      // default value
     private static int mMaxImageWidth = MAX_IMAGE_WIDTH;        // default value
     private static int mRecipientLimit = Integer.MAX_VALUE;     // default value
-    private static int mDefaultSMSMessagesPerThread = 200;      // default value
-    private static int mDefaultMMSMessagesPerThread = 20;       // default value
+    private static int mDefaultSMSMessagesPerThread = 500;      // default value
+    private static int mDefaultMMSMessagesPerThread = 50;       // default value
     private static int mMinMessageCountPerThread = 2;           // default value
     private static int mMaxMessageCountPerThread = 5000;        // default value
     private static int mHttpSocketTimeout = 60*1000;            // default to 1 min
     private static int mMinimumSlideElementDuration = 7;        // default to 7 sec
     private static boolean mNotifyWapMMSC = false;
     private static boolean mAllowAttachAudio = true;
-    private static int mSmsToMmsTextThreshold = 4;
+
+    // If mEnableMultipartSMS is true, long sms messages are always sent as multi-part sms
+    // messages, with no checked limit on the number of segments.
+    // If mEnableMultipartSMS is false, then as soon as the user types a message longer
+    // than a single segment (i.e. 140 chars), then the message will turn into and be sent
+    // as an mms message. This feature exists for carriers that don't support multi-part sms's.
     private static boolean mEnableMultipartSMS = true;
+
+    // If mEnableMultipartSMS is true and mSmsToMmsTextThreshold > 1, then multi-part SMS messages
+    // will be converted into a single mms message. For example, if the mms_config.xml file
+    // specifies <int name="smsToMmsTextThreshold">4</int>, then on the 5th sms segment, the
+    // message will be converted to an mms.
+    private static int mSmsToMmsTextThreshold = -1;
+
     private static boolean mEnableSlideDuration = true;
+    private static boolean mEnableMMSReadReports = true;        // key: "enableMMSReadReports"
+    private static boolean mEnableSMSDeliveryReports = true;    // key: "enableSMSDeliveryReports"
+    private static boolean mEnableMMSDeliveryReports = true;    // key: "enableMMSDeliveryReports"
     private static int mMaxTextLength = -1;
 
     // This is the max amount of storage multiplied by mMaxMessageSize that we
@@ -76,10 +92,22 @@ public class MmsConfig {
     private static int mAliasRuleMinChars = 2;
     private static int mAliasRuleMaxChars = 48;
 
+    private static int mMaxSubjectLength = 40;  // maximum number of characters allowed for mms
+                                                // subject
+
+    // If mEnableGroupMms is true, a message with multiple recipients, regardless of contents,
+    // will be sent as a single MMS message with multiple "TO" fields set for each recipient.
+    // If mEnableGroupMms is false, the group MMS setting/preference will be hidden in the settings
+    // activity.
+    private static boolean mEnableGroupMms = true;
+
     public static void init(Context context) {
         if (LOCAL_LOGV) {
             Log.v(TAG, "MmsConfig.init()");
         }
+        // Always put the mnc/mcc in the log so we can tell which mms_config.xml was loaded.
+        Log.v(TAG, "mnc/mcc: " +
+                android.os.SystemProperties.get(TelephonyProperties.PROPERTY_ICC_OPERATOR_NUMERIC));
 
         loadMmsSettings(context);
     }
@@ -93,7 +121,10 @@ public class MmsConfig {
     }
 
     public static int getMaxMessageSize() {
-        return mMaxMessageSize;
+        if (LOCAL_LOGV) {
+            Log.v(TAG, "MmsConfig.getMaxMessageSize(): " + mMaxMessageSize);
+        }
+       return mMaxMessageSize;
     }
 
     /**
@@ -177,6 +208,18 @@ public class MmsConfig {
         return mEnableSlideDuration;
     }
 
+    public static boolean getMMSReadReportsEnabled() {
+        return mEnableMMSReadReports;
+    }
+
+    public static boolean getSMSDeliveryReportsEnabled() {
+        return mEnableSMSDeliveryReports;
+    }
+
+    public static boolean getMMSDeliveryReportsEnabled() {
+        return mEnableMMSDeliveryReports;
+    }
+
     public static boolean getNotifyWapMMSC() {
         return mNotifyWapMMSC;
     }
@@ -199,6 +242,14 @@ public class MmsConfig {
 
     public static boolean getAllowAttachAudio() {
         return mAllowAttachAudio;
+    }
+
+    public static int getMaxSubjectLength() {
+        return mMaxSubjectLength;
+    }
+
+    public static boolean getGroupMmsEnabled() {
+        return mEnableGroupMms;
     }
 
     public static final void beginDocument(XmlPullParser parser, String firstElementName) throws XmlPullParserException, IOException
@@ -227,7 +278,7 @@ public class MmsConfig {
             ;
         }
     }
-    
+
     private static void loadMmsSettings(Context context) {
         XmlResourceParser parser = context.getResources().getXml(R.xml.mms_config);
 
@@ -248,7 +299,8 @@ public class MmsConfig {
                 }
 
                 if (DEBUG) {
-                    Log.v(TAG, "tag: " + tag + " value: " + value);
+                    Log.v(TAG, "tag: " + tag + " value: " + value + " - " +
+                            text);
                 }
                 if ("name".equalsIgnoreCase(name)) {
                     if ("bool".equals(tag)) {
@@ -267,6 +319,14 @@ public class MmsConfig {
                             mEnableMultipartSMS = "true".equalsIgnoreCase(text);
                         } else if ("enableSlideDuration".equalsIgnoreCase(value)) {
                             mEnableSlideDuration = "true".equalsIgnoreCase(text);
+                        } else if ("enableMMSReadReports".equalsIgnoreCase(value)) {
+                            mEnableMMSReadReports = "true".equalsIgnoreCase(text);
+                        } else if ("enableSMSDeliveryReports".equalsIgnoreCase(value)) {
+                            mEnableSMSDeliveryReports = "true".equalsIgnoreCase(text);
+                        } else if ("enableMMSDeliveryReports".equalsIgnoreCase(value)) {
+                            mEnableMMSDeliveryReports = "true".equalsIgnoreCase(text);
+                        } else if ("enableGroupMms".equalsIgnoreCase(value)) {
+                            mEnableGroupMms = "true".equalsIgnoreCase(text);
                         }
                     } else if ("int".equals(tag)) {
                         // int config tags go here
@@ -303,6 +363,8 @@ public class MmsConfig {
                             mSmsToMmsTextThreshold = Integer.parseInt(text);
                         } else if ("maxMessageTextSize".equalsIgnoreCase(value)) {
                             mMaxTextLength = Integer.parseInt(text);
+                        } else if ("maxSubjectLength".equalsIgnoreCase(value)) {
+                            mMaxSubjectLength = Integer.parseInt(text);
                         }
                     } else if ("string".equals(tag)) {
                         // string config tags go here
@@ -343,7 +405,6 @@ public class MmsConfig {
                 String.format("MmsConfig.loadMmsSettings mms_config.xml missing %s setting",
                         errorStr);
             Log.e(TAG, err);
-            throw new ContentRestrictionException(err);
         }
     }
 
